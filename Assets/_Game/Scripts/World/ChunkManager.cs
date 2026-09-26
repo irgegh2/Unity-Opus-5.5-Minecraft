@@ -102,13 +102,16 @@ namespace MCR
                     world.session?.save?.PrepareChunk(world, c);
                     world.chunks[key] = c;
                     created++;
-                    QueueTerrain(c);
+
+                    // The near 7x7 terrain area feeds decoration/lighting for the
+                    // first visible chunks, so don't let distant generation block it.
+                    QueueTerrain(c, d <= 3);
                     continue;
                 }
                 if (c.stage == (int)ChunkStage.Terrain && d <= R + 2 && !decorQ.Contains(key))
                 {
                     var nb = Neighbours(cx, cz, (int)ChunkStage.Terrain);
-                    if (nb != null) QueueDecorate(c, nb);
+                    if (nb != null) QueueDecorate(c, nb, d <= 2);
                 }
                 else if (c.stage == (int)ChunkStage.Final && !c.lit && d <= R + 1 && !lightQ.Contains(key))
                 {
@@ -128,7 +131,7 @@ namespace MCR
             if (Time.frameCount % 20 == 0) UnloadFar(R + 5);
         }
 
-        void QueueTerrain(Chunk c)
+        void QueueTerrain(Chunk c, bool highPriority)
         {
             long key = c.Key;
             terrainQ.Add(key);
@@ -145,10 +148,10 @@ namespace MCR
                     if (world.GetChunk(c.cx, c.cz) != c) return;
                     c.stage = (int)ChunkStage.Terrain;
                 });
-            });
+            }, highPriority);
         }
 
-        void QueueDecorate(Chunk c, Chunk[] nb)
+        void QueueDecorate(Chunk c, Chunk[] nb, bool highPriority)
         {
             long key = c.Key;
             decorQ.Add(key);
@@ -168,7 +171,7 @@ namespace MCR
                     c.RecomputeHeights();
                     c.stage = (int)ChunkStage.Final;
                 });
-            });
+            }, highPriority);
         }
 
         void QueueLight(Chunk c, Chunk[] nb)

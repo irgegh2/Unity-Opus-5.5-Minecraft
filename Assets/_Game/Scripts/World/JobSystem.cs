@@ -26,7 +26,7 @@ namespace MCR
             threads = new Thread[ThreadCount];
             for (int i = 0; i < ThreadCount; i++)
             {
-                threads[i] = new Thread(Worker) { IsBackground = true, Name = "MCR-Worker-" + i, Priority = System.Threading.ThreadPriority.BelowNormal };
+                threads[i] = new Thread(Worker) { IsBackground = true, Name = "MCR-Worker-" + i, Priority = System.Threading.ThreadPriority.Normal };
                 threads[i].Start();
             }
             Instance = this;
