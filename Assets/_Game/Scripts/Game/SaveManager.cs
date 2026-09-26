@@ -42,7 +42,7 @@ namespace MCR
         struct PendingWrite { public string path; public byte[] data; }
         readonly ConcurrentQueue<PendingWrite> pendingWrites = new ConcurrentQueue<PendingWrite>();
         readonly AutoResetEvent writerSignal = new AutoResetEvent(false);
-        readonly ManualResetEventSlim writerIdle = new ManualResetEventSlim(true);
+        readonly object writerFlushLock = new object();
         readonly Thread writerThread;
         volatile bool writerRunning = true;
         int pendingWriteCount;
@@ -60,7 +60,6 @@ namespace MCR
 
         void QueueWrite(string path, byte[] data)
         {
-            writerIdle.Reset();
             Interlocked.Increment(ref pendingWriteCount);
             pendingWrites.Enqueue(new PendingWrite { path = path, data = data });
             writerSignal.Set();
@@ -91,16 +90,22 @@ namespace MCR
                 finally
                 {
                     if (Interlocked.Decrement(ref pendingWriteCount) == 0)
-                        writerIdle.Set();
+                    {
+                        lock (writerFlushLock) Monitor.PulseAll(writerFlushLock);
+                    }
                 }
             }
-            writerIdle.Set();
+
+            lock (writerFlushLock) Monitor.PulseAll(writerFlushLock);
         }
 
         public void FlushPendingWrites()
         {
-            if (!writerRunning && Volatile.Read(ref pendingWriteCount) == 0) return;
-            writerIdle.Wait();
+            lock (writerFlushLock)
+            {
+                while (Volatile.Read(ref pendingWriteCount) > 0)
+                    Monitor.Wait(writerFlushLock);
+            }
         }
 
         public void ShutdownWriter()
@@ -111,7 +116,6 @@ namespace MCR
             writerSignal.Set();
             try { writerThread.Join(); } catch { }
             writerSignal.Dispose();
-            writerIdle.Dispose();
         }
 
         static long RegionKey(int rx, int rz) => ((long)rx << 32) ^ (uint)rz;
