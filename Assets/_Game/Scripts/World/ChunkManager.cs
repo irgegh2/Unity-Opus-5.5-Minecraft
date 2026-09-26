@@ -16,6 +16,7 @@ namespace MCR
         public readonly World world;
         readonly JobSystem jobs;
         public int renderDistance = 10;
+        readonly ConcurrentQueue<Action> urgentResults = new ConcurrentQueue<Action>();
         readonly ConcurrentQueue<Action> results = new ConcurrentQueue<Action>();
         readonly HashSet<long> terrainQ = new HashSet<long>(), decorQ = new HashSet<long>(), lightQ = new HashSet<long>();
         readonly Dictionary<long, ChunkRender> renders = new Dictionary<long, ChunkRender>();
@@ -76,23 +77,33 @@ namespace MCR
             pcx = Mathf.FloorToInt(playerPos.x) >> 4; pcz = Mathf.FloorToInt(playerPos.z) >> 4;
             int R = renderDistance;
             EnsureSpiral(R + 3);
-            // ---- apply finished work
+            // ---- apply urgent finished work first
             var sw = System.Diagnostics.Stopwatch.StartNew();
             int applied = 0;
-            while ((applied < 64 || loadingScreen) && sw.ElapsedMilliseconds < (loadingScreen ? 40 : 6) && results.TryDequeue(out var a))
+            while ((applied < 96 || loadingScreen) &&
+                sw.ElapsedMilliseconds < (loadingScreen ? 30 : 6) &&
+                urgentResults.TryDequeue(out var a))
             {
                 try { a(); } catch (Exception e) { Debug.LogError("[ChunkManager] " + e); }
                 applied++;
             }
-            lastUploadMs = (float)sw.Elapsed.TotalMilliseconds;
             // ---- schedule
             int maxInFlight = jobs.ThreadCount * 3;
+            int urgentInFlightLimit = jobs.ThreadCount * 6;
             int created = 0;
             foreach (var o in spiral)
             {
-                if (jobs.InFlight >= maxInFlight) break;
                 int cx = pcx + o.x, cz = pcz + o.y;
                 int d = Math.Max(Math.Abs(o.x), Math.Abs(o.y));
+
+                // Let the near dependency ring jump ahead even when distant work
+                // has already filled the normal worker budget.
+                bool urgentZone = d <= 4;
+                int inFlight = jobs.InFlight;
+                if (inFlight >= maxInFlight &&
+                    (!urgentZone || inFlight >= urgentInFlightLimit))
+                    continue;
+
                 long key = World.ChunkKey(cx, cz);
                 var c = world.GetChunk(cx, cz);
                 if (c == null)
@@ -103,30 +114,50 @@ namespace MCR
                     world.chunks[key] = c;
                     created++;
 
-                    // The near 7x7 terrain area feeds decoration/lighting for the
-                    // first visible chunks, so don't let distant generation block it.
-                    QueueTerrain(c, d <= 3);
+                    // Fast dependency pyramid for the first visible 3x3 chunks:
+                    // terrain 9x9 -> decorate 7x7 -> light 5x5 -> mesh 3x3.
+                    QueueTerrain(c, d <= 4);
                     continue;
-                }
-                if (c.stage == (int)ChunkStage.Terrain && d <= R + 2 && !decorQ.Contains(key))
-                {
-                    var nb = Neighbours(cx, cz, (int)ChunkStage.Terrain);
-                    if (nb != null) QueueDecorate(c, nb, d <= 2);
-                }
-                else if (c.stage == (int)ChunkStage.Final && !c.lit && d <= R + 1 && !lightQ.Contains(key))
-                {
-                    var nb = Neighbours(cx, cz, (int)ChunkStage.Final);
-                    if (nb != null) QueueLight(c, nb);
-                }
-                else if (c.lit && d <= R)
-                {
-                    if (!renders.TryGetValue(key, out var cr) || !cr.anyBuilt || c.anyDirty)
-                    {
-                        var nb = Neighbours(cx, cz, (int)ChunkStage.Final, true);
-                        if (nb != null) QueueMeshes(c, nb, d <= 1 && !loadingScreen && cr != null && cr.anyBuilt);
                     }
-                }
+                    if (c.stage == (int)ChunkStage.Terrain && d <= R + 2 && !decorQ.Contains(key))
+                    {
+                        var nb = Neighbours(cx, cz, (int)ChunkStage.Terrain);
+                        if (nb != null) QueueDecorate(c, nb, d <= 3);
+                    }
+                    else if (c.stage == (int)ChunkStage.Final && !c.lit && d <= R + 1 && !lightQ.Contains(key))
+                    {
+                        var nb = Neighbours(cx, cz, (int)ChunkStage.Final);
+                        if (nb != null) QueueLight(c, nb, d <= 2);
+                    }
+                    else if (c.lit && d <= R)
+                    {
+                        if (!renders.TryGetValue(key, out var cr) || !cr.anyBuilt || c.anyDirty)
+                        {
+                            var nb = Neighbours(cx, cz, (int)ChunkStage.Final, true);
+                            if (nb != null)
+                                QueueMeshes(
+                                    c,
+                                    nb,
+                                    d <= 1 && !loadingScreen && cr != null && cr.anyBuilt,
+                                    d <= 1);
+                        }
+                    }
             }
+
+            // The critical path has already been scheduled above.
+            // Now spend only the remaining frame budget on distant/background work.
+            int resultBudget = loadingScreen ? 40 : 8;
+            while ((applied < 128 || loadingScreen) &&
+                sw.ElapsedMilliseconds < resultBudget &&
+                results.TryDequeue(out var background))
+            {
+                try { background(); }
+                catch (Exception e) { Debug.LogError("[ChunkManager] " + e); }
+                applied++;
+            }
+
+            lastUploadMs = (float)sw.Elapsed.TotalMilliseconds;
+
             // ---- unload far chunks
             if (Time.frameCount % 20 == 0) UnloadFar(R + 5);
         }
@@ -141,7 +172,7 @@ namespace MCR
             {
                 try { gen.GenerateTerrain(c); }
                 catch (Exception e) { Debug.LogError("Terrain gen failed " + c.cx + "," + c.cz + ": " + e); }
-                results.Enqueue(() =>
+                (highPriority ? urgentResults : results).Enqueue(() =>
                 {
                     terrainQ.Remove(key);
                     Interlocked.Decrement(ref c.busy);
@@ -161,7 +192,7 @@ namespace MCR
             {
                 try { gen.Decorate(c, nb); }
                 catch (Exception e) { Debug.LogError("Decorate failed " + c.cx + "," + c.cz + ": " + e); }
-                results.Enqueue(() =>
+                (highPriority ? urgentResults : results).Enqueue(() =>
                 {
                     decorQ.Remove(key);
                     Interlocked.Decrement(ref c.busy);
@@ -174,26 +205,40 @@ namespace MCR
             }, highPriority);
         }
 
-        void QueueLight(Chunk c, Chunk[] nb)
+        void QueueLight(Chunk c, Chunk[] nb, bool highPriority)
         {
             long key = c.Key;
             lightQ.Add(key);
             Interlocked.Increment(ref c.busy);
+
             jobs.Enqueue(() =>
             {
                 try { Lighting.LightChunk(world, c, nb); }
-                catch (Exception e) { Debug.LogError("Light failed " + c.cx + "," + c.cz + ": " + e); }
-                results.Enqueue(() =>
+                catch (Exception e)
+                {
+                    Debug.LogError("Light failed " + c.cx + "," + c.cz + ": " + e);
+                }
+
+                (highPriority ? urgentResults : results).Enqueue(() =>
                 {
                     lightQ.Remove(key);
                     Interlocked.Decrement(ref c.busy);
+
                     if (world.GetChunk(c.cx, c.cz) != c) return;
+
                     c.lit = true;
                     c.stage = (int)ChunkStage.Lit;
                     c.MarkAllDirty();
-                    world.OnChunkLit(c);
+
+                    // Mob population is not required for rendering this chunk.
+                    // Keep it off the critical terrain -> mesh path, especially at night.
+                    results.Enqueue(() =>
+                    {
+                        if (world.GetChunk(c.cx, c.cz) == c)
+                            world.OnChunkLit(c);
+                    });
                 });
-            }, true);
+            }, highPriority);
         }
 
         ChunkRender GetRender(Chunk c)
@@ -209,7 +254,7 @@ namespace MCR
             return cr;
         }
 
-        void QueueMeshes(Chunk c, Chunk[] nb, bool syncNear)
+        void QueueMeshes(Chunk c, Chunk[] nb, bool syncNear, bool highPriority)
         {
             var cr = GetRender(c);
             int groups = ChunkMesher.GroupCount(world);
@@ -237,12 +282,12 @@ namespace MCR
                         ColumnMeshData data = null;
                         try { data = ChunkMesher.BuildColumn(world, nb, group, smooth, fancy); data.version = ver; }
                         catch (Exception e) { Debug.LogError("Mesh failed " + c.cx + "," + c.cz + ": " + e); }
-                        results.Enqueue(() =>
+                        (highPriority ? urgentResults : results).Enqueue(() =>
                         {
                             Interlocked.Decrement(ref c.busy);
                             if (data != null) Upload(cr, data);
                         });
-                    }, first);
+                    }, highPriority);
                 }
             }
             c.anyDirty = false;
