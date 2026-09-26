@@ -361,33 +361,61 @@ namespace MCR
         readonly HashSet<long> scheduledKeys = new HashSet<long>();
         long schedSeq;
 
+        static bool ScheduledLess(in Scheduled a, in Scheduled b) =>
+            a.due < b.due || (a.due == b.due && a.seq < b.seq);
+
+        void PushScheduled(Scheduled value)
+        {
+            int i = scheduled.Count;
+            scheduled.Add(value);
+            while (i > 0)
+            {
+                int p = (i - 1) >> 1;
+                if (!ScheduledLess(value, scheduled[p])) break;
+                scheduled[i] = scheduled[p];
+                i = p;
+            }
+            scheduled[i] = value;
+        }
+
+        Scheduled PopScheduled()
+        {
+            int last = scheduled.Count - 1;
+            var root = scheduled[0];
+            var value = scheduled[last];
+            scheduled.RemoveAt(last);
+            if (last == 0) return root;
+
+            int i = 0;
+            int count = scheduled.Count;
+            while (true)
+            {
+                int left = i * 2 + 1;
+                if (left >= count) break;
+                int right = left + 1;
+                int child = right < count && ScheduledLess(scheduled[right], scheduled[left]) ? right : left;
+                if (!ScheduledLess(scheduled[child], value)) break;
+                scheduled[i] = scheduled[child];
+                i = child;
+            }
+            scheduled[i] = value;
+            return root;
+        }
+
         public void ScheduleTick(Int3 p, Block b, int delay)
         {
             long key = p.Pack() ^ ((long)b.index << 52);
             if (!scheduledKeys.Add(key)) return;
-            scheduled.Add(new Scheduled { pos = p, due = tickCount + Math.Max(1, delay), blockIndex = b.index, seq = schedSeq++ });
+            PushScheduled(new Scheduled { pos = p, due = tickCount + Math.Max(1, delay), blockIndex = b.index, seq = schedSeq++ });
         }
 
-        readonly List<Scheduled> dueNow = new List<Scheduled>();
         void RunScheduledTicks()
         {
-            if (scheduled.Count == 0) return;
-            dueNow.Clear();
-            for (int i = scheduled.Count - 1; i >= 0; i--)
-            {
-                if (scheduled[i].due <= tickCount)
-                {
-                    dueNow.Add(scheduled[i]);
-                    scheduled.RemoveAt(i);
-                }
-            }
-            if (dueNow.Count == 0) return;
-            dueNow.Sort((a, b) => a.due != b.due ? a.due.CompareTo(b.due) : a.seq.CompareTo(b.seq));
             int budget = 4096;
-            foreach (var s in dueNow)
+            while (budget-- > 0 && scheduled.Count > 0 && scheduled[0].due <= tickCount)
             {
+                var s = PopScheduled();
                 scheduledKeys.Remove(s.pos.Pack() ^ ((long)s.blockIndex << 52));
-                if (budget-- <= 0) { scheduled.Add(s); scheduledKeys.Add(s.pos.Pack() ^ ((long)s.blockIndex << 52)); continue; }
                 if (!IsLoaded(s.pos)) continue;
                 ushort st = GetState(s.pos);
                 var b = Blocks.ByState[st];

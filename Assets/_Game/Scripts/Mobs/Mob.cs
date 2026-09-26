@@ -505,9 +505,11 @@ namespace MCR
 
     public static class Pathfinder
     {
-        struct Node { public Int3 pos; public float g, f; public long parent; public bool closed; }
+        struct Node { public Int3 pos; public float g, f; public long parent; public bool closed; public long openOrder; }
+        struct OpenEntry { public long key; public float f; public long order; }
         static readonly Dictionary<long, Node> nodes = new Dictionary<long, Node>();
-        static readonly List<long> open = new List<long>();
+        static readonly List<OpenEntry> open = new List<OpenEntry>();
+        static long nextOpenOrder;
         static readonly Int3[] dirs = { new Int3(1, 0, 0), new Int3(-1, 0, 0), new Int3(0, 0, 1), new Int3(0, 0, -1), new Int3(1, 0, 1), new Int3(1, 0, -1), new Int3(-1, 0, 1), new Int3(-1, 0, -1) };
 
         public static List<Int3> Find(Mob m, Vector3 target, int range)
@@ -517,22 +519,32 @@ namespace MCR
             Int3 start = new Int3(Mathf.FloorToInt(m.position.x - (sw - 1) * 0.5f), Mathf.FloorToInt(m.position.y + 0.1f), Mathf.FloorToInt(m.position.z - (sw - 1) * 0.5f));
             Int3 goal = new Int3(Mathf.FloorToInt(target.x - (sw - 1) * 0.5f), Mathf.FloorToInt(target.y + 0.1f), Mathf.FloorToInt(target.z - (sw - 1) * 0.5f));
             if (start.DistSq(goal) > (range + 8) * (range + 8)) { Vector3 dir = (target - m.position).normalized * range; goal = Int3.Floor(m.position + dir); }
-            nodes.Clear(); open.Clear();
+            nodes.Clear(); open.Clear(); nextOpenOrder = 0;
             long sk = start.Pack();
-            nodes[sk] = new Node { pos = start, g = 0, f = H(start, goal), parent = long.MinValue };
-            open.Add(sk);
+            float startF = H(start, goal);
+            nodes[sk] = new Node { pos = start, g = 0, f = startF, parent = long.MinValue, openOrder = nextOpenOrder };
+            PushOpen(new OpenEntry { key = sk, f = startF, order = nextOpenOrder++ });
             long bestKey = sk; float bestH = H(start, goal);
             int maxNodes = 400 + range * 8;
             bool swim = m.def.aquatic || m.def.amphibious;
             int maxDrop = m.def.id == "cat" || m.def.id == "ocelot" ? 5 : (m is SpiderMob ? 6 : 3);
             int iter = 0;
-            while (open.Count > 0 && iter++ < maxNodes)
+            while (open.Count > 0 && iter < maxNodes)
             {
-                // pop lowest f
-                int bi = 0; float bf = float.MaxValue;
-                for (int i = 0; i < open.Count; i++) { var nn = nodes[open[i]]; if (nn.f < bf) { bf = nn.f; bi = i; } }
-                long ck = open[bi]; open[bi] = open[open.Count - 1]; open.RemoveAt(open.Count - 1);
-                var cur = nodes[ck]; cur.closed = true; nodes[ck] = cur;
+                OpenEntry oe;
+                Node cur;
+                long ck;
+                do
+                {
+                    if (open.Count == 0) goto SearchDone;
+                    oe = PopOpen();
+                    ck = oe.key;
+                    if (!nodes.TryGetValue(ck, out cur)) continue;
+                }
+                while (cur.closed || cur.f != oe.f);
+
+                iter++;
+                cur.closed = true; nodes[ck] = cur;
                 float h = H(cur.pos, goal);
                 if (h < bestH) { bestH = h; bestKey = ck; }
                 if (cur.pos.x == goal.x && cur.pos.z == goal.z && Mathf.Abs(cur.pos.y - goal.y) <= 1) { bestKey = ck; break; }
@@ -571,14 +583,18 @@ namespace MCR
                     {
                         if (ex.closed || ex.g <= g) continue;
                         ex.g = g; ex.f = g + H(np, goal); ex.parent = ck; nodes[nk] = ex;
+                        PushOpen(new OpenEntry { key = nk, f = ex.f, order = ex.openOrder });
                     }
                     else
                     {
-                        nodes[nk] = new Node { pos = np, g = g, f = g + H(np, goal), parent = ck };
-                        open.Add(nk);
+                        float nf = g + H(np, goal);
+                        long order = nextOpenOrder++;
+                        nodes[nk] = new Node { pos = np, g = g, f = nf, parent = ck, openOrder = order };
+                        PushOpen(new OpenEntry { key = nk, f = nf, order = order });
                     }
                 }
             }
+        SearchDone:
             // reconstruct toward best node
             var result = new List<Int3>();
             long k2 = bestKey;
@@ -587,6 +603,47 @@ namespace MCR
             result.Reverse();
             if (result.Count > 0) result.RemoveAt(0);
             return result;
+        }
+
+        static bool OpenLess(in OpenEntry a, in OpenEntry b) =>
+            a.f < b.f || (a.f == b.f && a.order < b.order);
+
+        static void PushOpen(OpenEntry value)
+        {
+            int i = open.Count;
+            open.Add(value);
+            while (i > 0)
+            {
+                int p = (i - 1) >> 1;
+                if (!OpenLess(value, open[p])) break;
+                open[i] = open[p];
+                i = p;
+            }
+            open[i] = value;
+        }
+
+        static OpenEntry PopOpen()
+        {
+            int last = open.Count - 1;
+            var root = open[0];
+            var value = open[last];
+            open.RemoveAt(last);
+            if (last == 0) return root;
+
+            int i = 0;
+            int count = open.Count;
+            while (true)
+            {
+                int left = i * 2 + 1;
+                if (left >= count) break;
+                int right = left + 1;
+                int child = right < count && OpenLess(open[right], open[left]) ? right : left;
+                if (!OpenLess(open[child], value)) break;
+                open[i] = open[child];
+                i = child;
+            }
+            open[i] = value;
+            return root;
         }
 
         static float H(Int3 a, Int3 b) { int dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; return Mathf.Sqrt(dx * dx + dy * dy * 2 + dz * dz); }
