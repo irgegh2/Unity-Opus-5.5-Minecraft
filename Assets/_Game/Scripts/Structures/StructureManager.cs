@@ -161,21 +161,43 @@ namespace MCR
     public static partial class StructureManager
     {
         public static readonly List<StructureType> Types = new List<StructureType>();
-        static bool inited;
-        static readonly ConcurrentDictionary<long, StructureStart> cache = new ConcurrentDictionary<long, StructureStart>();
-        static readonly ConcurrentDictionary<long, bool> noStart = new ConcurrentDictionary<long, bool>();
+
+        static volatile bool inited;
+        static readonly object initLock = new object();
+
+        // Lazy makes GetStart single-execution per structure key even when several
+        // chunk decoration workers request the same structure at the same time.
+        // A cached null value also replaces the old noStart dictionary.
+        static readonly ConcurrentDictionary<long, Lazy<StructureStart>> cache =
+            new ConcurrentDictionary<long, Lazy<StructureStart>>();
 
         public static void Init()
         {
-            if (inited) return; inited = true;
-            RegisterTypes();
+            if (inited) return;
+
+            lock (initLock)
+            {
+                if (inited) return;
+
+                Types.Clear();
+                RegisterTypes();
+                inited = true;
+            }
         }
+
         static partial void RegisterTypesImpl(List<StructureType> list);
         static void RegisterTypes() { RegisterTypesImpl(Types); }
 
-        public static void ClearCache() { cache.Clear(); noStart.Clear(); }
+        public static void ClearCache()
+        {
+            cache.Clear();
+        }
 
-        static long Key(StructureType t, int rx, int rz, int seed) => ((long)(rx & 0xFFFFF) << 40) ^ ((long)(rz & 0xFFFFF) << 16) ^ (long)(t.salt & 0xFFFF) ^ ((long)seed << 20);
+        static long Key(StructureType t, int rx, int rz, int seed) =>
+            ((long)(rx & 0xFFFFF) << 40) ^
+            ((long)(rz & 0xFFFFF) << 16) ^
+            (long)(t.salt & 0xFFFF) ^
+            ((long)seed << 20);
 
         /// <summary>Origin chunk for the structure in region (rx, rz) (MC-like random spread placement).</summary>
         public static void RegionOrigin(StructureType t, int seed, int rx, int rz, out int cx, out int cz)
@@ -189,20 +211,41 @@ namespace MCR
         public static StructureStart GetStart(WorldGenerator g, StructureType t, int rx, int rz)
         {
             long k = Key(t, rx, rz, g.seed) ^ ((long)g.world.dim << 60);
-            if (cache.TryGetValue(k, out var s)) return s;
-            if (noStart.ContainsKey(k)) return null;
-            RegionOrigin(t, g.seed, rx, rz, out int cx, out int cz);
-            var rng = new RNG(g.seed, cx, cz, t.salt * 7 + 13);
-            StructureStart st = null;
-            int bx = (cx << 4) + 8, bz = (cz << 4) + 8;
-            try
-            {
-                if (t.CanSpawn(g, bx, bz, ref rng)) st = t.Create(g, cx, cz, ref rng);
-            }
-            catch (Exception e) { Debug.LogError("Structure " + t.id + " failed: " + e); st = null; }
-            if (st != null) { st.type = t.id; st.cx = cx; st.cz = cz; st.dim = g.world.dim; cache[k] = st; }
-            else noStart[k] = true;
-            return st;
+
+            var lazy = cache.GetOrAdd(
+                k,
+                _ => new Lazy<StructureStart>(
+                    () =>
+                    {
+                        RegionOrigin(t, g.seed, rx, rz, out int cx, out int cz);
+                        var rng = new RNG(g.seed, cx, cz, t.salt * 7 + 13);
+                        StructureStart st = null;
+                        int bx = (cx << 4) + 8, bz = (cz << 4) + 8;
+
+                        try
+                        {
+                            if (t.CanSpawn(g, bx, bz, ref rng))
+                                st = t.Create(g, cx, cz, ref rng);
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.LogError("Structure " + t.id + " failed: " + e);
+                            return null;
+                        }
+
+                        if (st != null)
+                        {
+                            st.type = t.id;
+                            st.cx = cx;
+                            st.cz = cz;
+                            st.dim = g.world.dim;
+                        }
+
+                        return st;
+                    },
+                    true));
+
+            return lazy.Value;
         }
 
         public static List<StructureStart> StartsNear(WorldGenerator g, int cx, int cz)
