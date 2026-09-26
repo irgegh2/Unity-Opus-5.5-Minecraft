@@ -27,6 +27,7 @@ namespace MCR
         public Material[] materials;
         int pcx, pcz;
         int lastRenderDirtyVersion = -1;
+        int lastRenderDistance = -1;
         bool schedulerInitialized, schedulerSettled;
         public int loadedCount => world.chunks.Count;
         public int meshedCount;
@@ -95,6 +96,8 @@ namespace MCR
             pcx = nextPcx; pcz = nextPcz;
 
             int R = renderDistance;
+            bool renderDistanceChanged = R != lastRenderDistance;
+            lastRenderDistance = R;
             EnsureSpiral(R + 3);
 
             // ---- apply urgent finished work first
@@ -114,6 +117,7 @@ namespace MCR
             bool runSchedule =
                 loadingScreen ||
                 movedChunk ||
+                renderDistanceChanged ||
                 !schedulerSettled ||
                 applied > 0 ||
                 jobs.InFlight > 0 ||

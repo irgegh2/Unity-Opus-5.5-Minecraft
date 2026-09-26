@@ -211,9 +211,22 @@ namespace MCR
 
         // ================================================================== incremental (main thread)
         struct LNode { public Int3 p; public int level; }
+
+        readonly struct DirtySectionKey : IEquatable<DirtySectionKey>
+        {
+            public readonly int cx, cz, sy;
+            public DirtySectionKey(int cx, int cz, int sy) { this.cx = cx; this.cz = cz; this.sy = sy; }
+            public bool Equals(DirtySectionKey other) => cx == other.cx && cz == other.cz && sy == other.sy;
+            public override bool Equals(object obj) => obj is DirtySectionKey other && Equals(other);
+            public override int GetHashCode()
+            {
+                unchecked { return (cx * 73856093) ^ (cz * 19349663) ^ (sy * 83492791); }
+            }
+        }
+
         static readonly Queue<LNode> removeQ = new Queue<LNode>();
         static readonly Queue<Int3> addQ = new Queue<Int3>();
-        static readonly Dictionary<Chunk, ulong> dirtySections = new Dictionary<Chunk, ulong>();
+        static readonly HashSet<DirtySectionKey> dirtySections = new HashSet<DirtySectionKey>();
 
         static int GetL(World w, Int3 p, bool sky)
         {
@@ -228,13 +241,8 @@ namespace MCR
         static void CollectDirtySection(World w, int x, int y, int z)
         {
             if (y < w.minY || y >= w.maxY) return;
-            var c = w.GetChunk(x >> 4, z >> 4);
-            if (c == null) return;
             int sy = (y - w.minY) >> 4;
-            if ((uint)sy >= (uint)c.sectionCount || sy >= 64) return;
-            ulong bit = 1UL << sy;
-            dirtySections.TryGetValue(c, out ulong mask);
-            dirtySections[c] = mask | bit;
+            dirtySections.Add(new DirtySectionKey(x >> 4, z >> 4, sy));
         }
 
         static void CollectDirtyAround(World w, Int3 p)
@@ -253,15 +261,12 @@ namespace MCR
             if (lx == 15 && lz == 15) CollectDirtySection(w, p.x + 1, p.y, p.z + 1);
         }
 
-        static void FlushDirtySections()
+        static void FlushDirtySections(World w)
         {
-            foreach (var kv in dirtySections)
+            foreach (var key in dirtySections)
             {
-                var c = kv.Key;
-                ulong mask = kv.Value;
-                for (int sy = 0; sy < c.sectionCount && sy < 64; sy++)
-                    if ((mask & (1UL << sy)) != 0)
-                        c.MarkSectionDirty(sy);
+                var c = w.GetChunk(key.cx, key.cz);
+                if (c != null) c.MarkSectionDirty(key.sy);
             }
             dirtySections.Clear();
         }
@@ -290,7 +295,7 @@ namespace MCR
             }
             finally
             {
-                FlushDirtySections();
+                FlushDirtySections(w);
             }
         }
 
