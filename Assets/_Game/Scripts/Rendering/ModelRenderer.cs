@@ -95,6 +95,7 @@ namespace MCR
         {
             public Texture2D opaque;
             public Color32[] pixels;
+            public bool ownsTexture;
         }
         static readonly Dictionary<string, SkinData> cache = new Dictionary<string, SkinData>();
 
@@ -102,10 +103,26 @@ namespace MCR
         {
             string key = skin + (variantSalt != null ? "#" + variantSalt : "");
             if (cache.TryGetValue(key, out var d)) return d;
+
+            // The local player uses the actual classic/wide 64x64 Steve texture.
+            // It is referenced by the generated player material under Resources, while
+            // the model itself stays procedural so its canonical pivots/layers are exact.
+            if (skin == "player" && variantSalt == null && w == 64 && h == 64)
+            {
+                var playerMat = Resources.Load<Material>("Models/player_mat");
+                var playerSkin = playerMat != null ? playerMat.mainTexture as Texture2D : null;
+                if (playerSkin != null)
+                {
+                    d = new SkinData { opaque = playerSkin, ownsTexture = false };
+                    cache[key] = d;
+                    return d;
+                }
+            }
+
             var px = new Color32[w * h];
             try { SkinPainter.Paint(skin, variantSalt, px, w, h); }
             catch (Exception e) { Debug.LogWarning("Skin paint failed for " + skin + ": " + e.Message); FillFlat(px, w, h); }
-            d = new SkinData { pixels = px };
+            d = new SkinData { pixels = px, ownsTexture = true };
             d.opaque = MakeTex(px, w, h, key, false);
             cache[key] = d;
             return d;
@@ -135,7 +152,7 @@ namespace MCR
         {
             foreach (var d in cache.Values)
             {
-                if (d.opaque != null) UnityEngine.Object.Destroy(d.opaque);
+                if (d.ownsTexture && d.opaque != null) UnityEngine.Object.Destroy(d.opaque);
             }
             cache.Clear();
         }
