@@ -198,12 +198,24 @@ namespace MCR
         public void MarkSectionDirty(int sy)
         {
             if ((uint)sy >= (uint)sectionCount) return;
-            sectionDirty[sy] = true; anyDirty = true;
+            if (!sectionDirty[sy])
+            {
+                sectionDirty[sy] = true;
+                world.NotifyRenderDirty();
+            }
+            anyDirty = true;
         }
 
         public void MarkAllDirty()
         {
-            for (int i = 0; i < sectionCount; i++) sectionDirty[i] = true;
+            bool changed = false;
+            for (int i = 0; i < sectionCount; i++)
+            {
+                if (sectionDirty[i]) continue;
+                sectionDirty[i] = true;
+                changed = true;
+            }
+            if (changed) world.NotifyRenderDirty();
             anyDirty = true;
         }
 

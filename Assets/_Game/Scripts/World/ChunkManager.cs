@@ -26,6 +26,8 @@ namespace MCR
         public Transform root;
         public Material[] materials;
         int pcx, pcz;
+        int lastRenderDirtyVersion = -1;
+        bool schedulerInitialized, schedulerSettled;
         public int loadedCount => world.chunks.Count;
         public int meshedCount;
         public int jobsInFlight => jobs.InFlight;
@@ -39,6 +41,7 @@ namespace MCR
             public Mesh[] meshes;
             public int[] version;
             public bool[] queued;
+            public bool[] dirtyAgain;
             public bool anyBuilt;
         }
 
@@ -85,9 +88,15 @@ namespace MCR
 
         public void Update(Vector3 playerPos, bool loadingScreen = false)
         {
-            pcx = Mathf.FloorToInt(playerPos.x) >> 4; pcz = Mathf.FloorToInt(playerPos.z) >> 4;
+            int nextPcx = Mathf.FloorToInt(playerPos.x) >> 4;
+            int nextPcz = Mathf.FloorToInt(playerPos.z) >> 4;
+            bool movedChunk = !schedulerInitialized || nextPcx != pcx || nextPcz != pcz;
+            schedulerInitialized = true;
+            pcx = nextPcx; pcz = nextPcz;
+
             int R = renderDistance;
             EnsureSpiral(R + 3);
+
             // ---- apply urgent finished work first
             var sw = System.Diagnostics.Stopwatch.StartNew();
             int applied = 0;
@@ -98,38 +107,60 @@ namespace MCR
                 try { a(); } catch (Exception e) { Debug.LogError("[ChunkManager] " + e); }
                 applied++;
             }
-            // ---- schedule
-            int maxInFlight = jobs.ThreadCount * 3;
-            int urgentInFlightLimit = jobs.ThreadCount * 6;
-            int created = 0;
-            foreach (var o in spiral)
+
+            // A fully built, stationary world has nothing to discover by walking all (R+3)^2
+            // positions every frame. Dirty chunks bump world.renderDirtyVersion, worker/results
+            // keep the scheduler awake, and crossing a chunk boundary wakes it immediately.
+            bool runSchedule =
+                loadingScreen ||
+                movedChunk ||
+                !schedulerSettled ||
+                applied > 0 ||
+                jobs.InFlight > 0 ||
+                !urgentResults.IsEmpty ||
+                !results.IsEmpty ||
+                lastRenderDirtyVersion != world.renderDirtyVersion;
+
+            bool workRemaining = false;
+            if (runSchedule)
             {
-                int cx = pcx + o.x, cz = pcz + o.y;
-                int d = Math.Max(Math.Abs(o.x), Math.Abs(o.y));
+                int maxInFlight = jobs.ThreadCount * 3;
+                int urgentInFlightLimit = jobs.ThreadCount * 6;
+                int created = 0;
 
-                // Let the near dependency ring jump ahead even when distant work
-                // has already filled the normal worker budget.
-                bool urgentZone = d <= 4;
-                int inFlight = jobs.InFlight;
-                if (inFlight >= maxInFlight &&
-                    (!urgentZone || inFlight >= urgentInFlightLimit))
-                    continue;
-
-                long key = World.ChunkKey(cx, cz);
-                var c = world.GetChunk(cx, cz);
-                if (c == null)
+                foreach (var o in spiral)
                 {
-                    if (created >= (loadingScreen ? 64 : 12)) continue;
-                    c = new Chunk(world, cx, cz);
-                    world.session?.save?.PrepareChunk(world, c);
-                    world.chunks[key] = c;
-                    created++;
+                    int cx = pcx + o.x, cz = pcz + o.y;
+                    int d = Math.Max(Math.Abs(o.x), Math.Abs(o.y));
 
-                    // Fast dependency pyramid for the first visible 3x3 chunks:
-                    // terrain 9x9 -> decorate 7x7 -> light 5x5 -> mesh 3x3.
-                    QueueTerrain(c, d <= 4);
-                    continue;
+                    // Let the near dependency ring jump ahead even when distant work
+                    // has already filled the normal worker budget.
+                    bool urgentZone = d <= 4;
+                    int inFlight = jobs.InFlight;
+                    if (inFlight >= maxInFlight &&
+                        (!urgentZone || inFlight >= urgentInFlightLimit))
+                    {
+                        workRemaining = true;
+                        continue;
                     }
+
+                    long key = World.ChunkKey(cx, cz);
+                    var c = world.GetChunk(cx, cz);
+                    if (c == null)
+                    {
+                        workRemaining = true;
+                        if (created >= (loadingScreen ? 64 : 12)) continue;
+                        c = new Chunk(world, cx, cz);
+                        world.session?.save?.PrepareChunk(world, c);
+                        world.chunks[key] = c;
+                        created++;
+
+                        // Fast dependency pyramid for the first visible 3x3 chunks:
+                        // terrain 9x9 -> decorate 7x7 -> light 5x5 -> mesh 3x3.
+                        QueueTerrain(c, d <= 4);
+                        continue;
+                    }
+
                     if (c.stage == (int)ChunkStage.Terrain && d <= R + 2 && !decorQ.Contains(key))
                     {
                         var nb = Neighbours(cx, cz, (int)ChunkStage.Terrain);
@@ -153,6 +184,18 @@ namespace MCR
                                     d <= 1);
                         }
                     }
+
+                    renders.TryGetValue(key, out var currentRender);
+                    if (!PipelineComplete(c, currentRender, d, R))
+                        workRemaining = true;
+                }
+
+                lastRenderDirtyVersion = world.renderDirtyVersion;
+                schedulerSettled =
+                    !workRemaining &&
+                    jobs.InFlight == 0 &&
+                    urgentResults.IsEmpty &&
+                    results.IsEmpty;
             }
 
             // The critical path has already been scheduled above.
@@ -171,6 +214,26 @@ namespace MCR
 
             // ---- unload far chunks
             if (Time.frameCount % 20 == 0) UnloadFar(R + 5);
+        }
+
+        static bool AnyQueued(ChunkRender cr)
+        {
+            if (cr == null) return false;
+            for (int i = 0; i < cr.queued.Length; i++)
+                if (cr.queued[i]) return true;
+            return false;
+        }
+
+        static bool PipelineComplete(Chunk c, ChunkRender cr, int d, int renderDistance)
+        {
+            if (c == null) return false;
+            if (d <= renderDistance)
+                return c.lit && cr != null && cr.anyBuilt && !c.anyDirty && !AnyQueued(cr);
+            if (d <= renderDistance + 1)
+                return c.lit;
+            if (d <= renderDistance + 2)
+                return c.stage >= (int)ChunkStage.Final;
+            return c.stage >= (int)ChunkStage.Terrain;
         }
 
         void QueueTerrain(Chunk c, bool highPriority)
@@ -261,7 +324,7 @@ namespace MCR
             {
                 if (cr != null) DestroyRender(cr);
                 int g = ChunkMesher.GroupCount(world);
-                cr = new ChunkRender { chunk = c, groups = new GameObject[g], meshes = new Mesh[g], version = new int[g], queued = new bool[g] };
+                cr = new ChunkRender { chunk = c, groups = new GameObject[g], meshes = new Mesh[g], version = new int[g], queued = new bool[g], dirtyAgain = new bool[g] };
                 renders[key] = cr;
             }
             return cr;
@@ -273,13 +336,37 @@ namespace MCR
             int groups = ChunkMesher.GroupCount(world);
             bool first = !cr.anyBuilt && !c.meshedOnce;
             int dirtyMask = 0, dirtyCount = 0;
+            bool pendingDirty = false;
 
             for (int g = 0; g < groups; g++)
             {
                 bool dirty = first;
-                for (int s = g * ChunkMesher.GroupSections; s < Math.Min(c.sectionCount, (g + 1) * ChunkMesher.GroupSections); s++)
-                    if (c.sectionDirty[s]) { dirty = true; c.sectionDirty[s] = false; }
+                int s0 = g * ChunkMesher.GroupSections;
+                int s1 = Math.Min(c.sectionCount, (g + 1) * ChunkMesher.GroupSections);
+                if (!dirty)
+                    for (int sy = s0; sy < s1; sy++)
+                        if (c.sectionDirty[sy]) { dirty = true; break; }
+
                 if (!dirty) continue;
+
+                // Never build the same vertical group twice in parallel. If it changes while
+                // a worker is already meshing it, invalidate that result and leave the dirty
+                // bits intact; the next scheduler pass creates exactly one fresh rebuild.
+                if (cr.queued[g])
+                {
+                    pendingDirty = true;
+                    if (!cr.dirtyAgain[g])
+                    {
+                        cr.dirtyAgain[g] = true;
+                        ++cr.version[g];
+                    }
+                    continue;
+                }
+
+                for (int sy = s0; sy < s1; sy++)
+                    c.sectionDirty[sy] = false;
+
+                cr.dirtyAgain[g] = false;
                 dirtyMask |= 1 << g;
                 dirtyCount++;
             }
@@ -287,7 +374,7 @@ namespace MCR
             if (dirtyCount == 0)
             {
                 ReturnNeighbours(nb);
-                c.anyDirty = false;
+                c.anyDirty = pendingDirty;
                 c.meshedOnce = true;
                 return;
             }
@@ -313,29 +400,45 @@ namespace MCR
                 for (int g = 0; g < groups; g++)
                 {
                     if ((dirtyMask & (1 << g)) == 0) continue;
+
                     int ver = ++cr.version[g];
                     int group = g;
+                    cr.queued[group] = true;
                     Interlocked.Increment(ref c.busy);
                     bool smooth = smoothLighting, fancy = fancyLeaves;
+
                     jobs.Enqueue(() =>
                     {
                         ColumnMeshData data = null;
-                        try { data = ChunkMesher.BuildColumn(world, nb, group, smooth, fancy); data.version = ver; }
-                        catch (Exception e) { Debug.LogError("Mesh failed " + c.cx + "," + c.cz + ": " + e); }
+                        try
+                        {
+                            data = ChunkMesher.BuildColumn(world, nb, group, smooth, fancy);
+                            data.version = ver;
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.LogError("Mesh failed " + c.cx + "," + c.cz + ": " + e);
+                        }
                         finally
                         {
                             if (Interlocked.Decrement(ref remaining) == 0)
                                 ReturnNeighbours(nb);
                         }
+
                         (highPriority ? urgentResults : results).Enqueue(() =>
                         {
                             Interlocked.Decrement(ref c.busy);
+                            cr.queued[group] = false;
+                            bool rebuild = cr.dirtyAgain[group];
+                            cr.dirtyAgain[group] = false;
+                            if (rebuild) c.anyDirty = true;
                             if (data != null) Upload(cr, data);
                         });
                     }, highPriority);
                 }
             }
-            c.anyDirty = false;
+
+            c.anyDirty = pendingDirty;
             c.meshedOnce = true;
         }
 
@@ -429,6 +532,7 @@ namespace MCR
         /// <summary>Force a full remesh of all loaded chunks (settings change / F3+A).</summary>
         public void ReloadAll()
         {
+            schedulerSettled = false;
             foreach (var c in world.chunks.Values) if (c.lit) c.MarkAllDirty();
         }
 

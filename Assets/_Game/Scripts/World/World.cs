@@ -31,6 +31,7 @@ namespace MCR
         public readonly List<Entity> entitiesToAdd = new List<Entity>();
         public RNG rand;
         public long tickCount;
+        public int renderDirtyVersion;
         public GameSession session;
         public readonly int seaLevel;
 
@@ -91,6 +92,12 @@ namespace MCR
         }
 
         public void InvalidateCache() { cacheChunk = null; cacheCx = int.MinValue; }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void NotifyRenderDirty()
+        {
+            System.Threading.Interlocked.Increment(ref renderDirtyVersion);
+        }
 
         public ushort GetState(int x, int y, int z)
         {
