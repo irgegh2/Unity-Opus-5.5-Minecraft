@@ -11,50 +11,90 @@ Shader "MCR/Unlit"
         [Toggle] _ZWrite ("ZWrite", Float) = 0
         [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest ("ZTest", Float) = 8
         _Fog ("Fog (0 off, otherwise distance scale)", Float) = 0
+        _Cutoff ("Alpha Cutoff", Range(0,1)) = 0
         [Enum(UnityEngine.Rendering.ColorWriteMask)] _ColorMask ("Color Mask", Float) = 15
     }
+
     SubShader
     {
         Tags { "RenderPipeline" = "UniversalPipeline" "RenderType" = "Transparent" "Queue" = "Transparent" }
+
         Pass
         {
             Name "MCRUnlit"
             Tags { "LightMode" = "UniversalForward" }
+
             Blend [_SrcBlend] [_DstBlend]
             Cull [_Cull]
             ZWrite [_ZWrite]
             ZTest [_ZTest]
             ColorMask [_ColorMask]
+
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
             #include "MCRCommon.hlsl"
-            TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
+
+            TEXTURE2D(_MainTex);
+            SAMPLER(sampler_MainTex);
+
             CBUFFER_START(UnityPerMaterial)
                 float4 _MainTex_ST;
                 float4 _Color;
-                float _SrcBlend; float _DstBlend; float _Cull; float _ZWrite; float _ZTest; float _Fog; float _ColorMask;
+                float _SrcBlend;
+                float _DstBlend;
+                float _Cull;
+                float _ZWrite;
+                float _ZTest;
+                float _Fog;
+                float _Cutoff;
+                float _ColorMask;
             CBUFFER_END
-            struct Attributes { float3 positionOS : POSITION; float2 uv : TEXCOORD0; half4 color : COLOR; };
-            struct Varyings { float4 positionCS : SV_POSITION; float2 uv : TEXCOORD0; half4 color : COLOR; float fog : TEXCOORD1; };
+
+            struct Attributes
+            {
+                float3 positionOS : POSITION;
+                float2 uv : TEXCOORD0;
+                half4 color : COLOR;
+            };
+
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+                float2 uv : TEXCOORD0;
+                half4 color : COLOR;
+                float fog : TEXCOORD1;
+            };
+
             Varyings vert(Attributes i)
             {
                 Varyings o;
+
                 float3 ws = TransformObjectToWorld(i.positionOS);
+
                 o.positionCS = TransformWorldToHClip(ws);
-                o.uv = i.uv;
+                o.uv = i.uv * _MainTex_ST.xy + _MainTex_ST.zw;
                 o.color = i.color * _Color;
                 o.fog = _Fog > 0.01 ? ComputeMCFogScaled(ws, _Fog) : 0;
+
                 return o;
             }
+
             half4 frag(Varyings i) : SV_Target
             {
                 half4 c = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv) * i.color;
+
+                if (_Cutoff > 0.0001)
+                    clip(c.a - _Cutoff);
+
                 c.rgb = lerp(c.rgb, _MC_FogColor.rgb, i.fog);
+
                 return c;
             }
+
             ENDHLSL
         }
     }
+
     FallBack Off
 }

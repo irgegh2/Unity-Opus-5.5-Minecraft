@@ -418,23 +418,90 @@ namespace MCR
         void TickWorld()
         {
             TicksRun++;
+
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var w = ActiveWorld;
+
             if (w == null) return;
+
             session.Tick();
             session.RunDeferred();
+
             ApplyPlayerControls();
-            w.Tick(player != null ? player.position : Vector3.zero);
-            w.TickEntities(player != null ? player.position : Vector3.zero);
+
+            w.Tick(
+                player != null
+                    ? player.position
+                    : Vector3.zero);
+
+            w.TickEntities(
+                player != null
+                    ? player.position
+                    : Vector3.zero);
+
             MobSpawner.Tick(w);
             MobSpawner.TickSpecial(w);
-            if (w.dim == DimensionId.End) session.dragonFight?.Tick(w);
+
+            if (w.dim == DimensionId.End)
+                session.dragonFight?.Tick(w);
+
             SkyTick();
             Particles.Tick(w);
-            Sounds.UpdateAmbience(TickStep, session.RainLevel(0f), player != null && player.position.y < 55, w.dim, hud.AnyScreen);
-            tickMs = (int)sw.ElapsedMilliseconds;
-            if (TicksRun % (20 * 60) == 0) SaveAll();
-            Listeners.SetCount(w.entities.Count);
+
+            float localRain = session.RainLevel(0f);
+
+            bool weatherMuffled =
+                player != null &&
+                player.position.y < 55f;
+
+            if (player != null &&
+                w.dim == DimensionId.Overworld)
+            {
+                int px =
+                    Mathf.FloorToInt(
+                        player.position.x);
+
+                int pz =
+                    Mathf.FloorToInt(
+                        player.position.z);
+
+                var biome =
+                    w.GetSurfaceBiome(
+                        px,
+                        pz);
+
+                bool actualRainHere =
+                    biome != null &&
+                    biome.precipitation == Precipitation.Rain &&
+                    !biome.snowy;
+
+                // Global weather can be active while the player stands in a dry or snowy biome.
+                // In that case normal rain audio should not sound directly above the player.
+                if (!actualRainHere)
+                    localRain = 0f;
+
+                // Roofs muffle the weather regardless of absolute Y position.
+                weatherMuffled =
+                    !w.CanSeeSky(
+                        Int3.Floor(
+                            player.EyePosition));
+            }
+
+            Sounds.UpdateAmbience(
+                TickStep,
+                localRain,
+                weatherMuffled,
+                w.dim,
+                hud.AnyScreen);
+
+            tickMs =
+                (int)sw.ElapsedMilliseconds;
+
+            if (TicksRun % (20 * 60) == 0)
+                SaveAll();
+
+            Listeners.SetCount(
+                w.entities.Count);
         }
 
         void UpdateLoading(float dt)

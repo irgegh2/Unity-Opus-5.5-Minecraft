@@ -251,52 +251,156 @@ namespace MCR
         readonly List<int> wTris = new List<int>();
 
         /// <summary>
-        /// One camera-facing sheet per block column around the viewer, from the height where the column stops
-        /// the rain up past the camera, so roofs keep it off. Rain streaks scroll fast; snow drifts and sways.
+        /// Weather sheets around the player. Nearby columns keep full density for good roof behaviour;
+        /// farther columns are sampled more sparsely to reduce transparent overdraw.
+        /// Animation itself is done through the material UV offset, so geometry is rebuilt only a few times
+        /// per second instead of twenty times per second.
         /// </summary>
-        void BuildWeather(Mesh mesh, World w, Vector3 camPos, bool snow, float strength, float time)
+        void BuildWeather(Mesh mesh, World w, Vector3 camPos, bool snow)
         {
-            wVerts.Clear(); wCols.Clear(); wUvs.Clear(); wTris.Clear();
+            wVerts.Clear();
+            wCols.Clear();
+            wUvs.Clear();
+            wTris.Clear();
+
             const int R = 10;
-            int cx = Mathf.FloorToInt(camPos.x), cz = Mathf.FloorToInt(camPos.z);
+            const int DenseR = 4;
+
+            int cx = Mathf.FloorToInt(camPos.x);
+            int cz = Mathf.FloorToInt(camPos.z);
             float camY = camPos.y;
+
+            int r2 = R * R;
+            int denseR2 = DenseR * DenseR;
+
             for (int dz = -R; dz <= R; dz++)
                 for (int dx = -R; dx <= R; dx++)
                 {
-                    float dist = Mathf.Sqrt(dx * dx + dz * dz);
-                    if (dist > R) continue;
-                    int x = cx + dx, z = cz + dz;
-                    var biome = w.GetBiome(new Int3(x, Mathf.FloorToInt(camY), z));
-                    if (biome == null || biome.precipitation == Precipitation.None) continue;
-                    bool snowy = biome.precipitation == Precipitation.Snow || biome.snowy;
-                    if (snowy != snow) continue;
+                    int distSq = dx * dx + dz * dz;
+                    if (distSq > r2) continue;
+
+                    int x = cx + dx;
+                    int z = cz + dz;
+
+                    bool dense = distSq <= denseR2;
+
+                    // Full density near the player. Farther out, one sheet roughly covers a 2x2 patch.
+                    if (!dense && (((x & 1) != 0) || ((z & 1) != 0)))
+                        continue;
+
+                    // Precipitation belongs to the surface biome. Using the 3D biome at camera height
+                    // caused rain/snow to appear and disappear in strange local patches.
+                    var biome = w.GetSurfaceBiome(x, z);
+
+                    if (biome == null || biome.precipitation == Precipitation.None)
+                        continue;
+
+                    bool snowy =
+                        biome.precipitation == Precipitation.Snow ||
+                        biome.snowy;
+
+                    if (snowy != snow)
+                        continue;
+
                     float floor = w.SkyHeight(x, z);
-                    float y0 = Mathf.Max(floor, camY - R), y1 = camY + R;
-                    if (y1 <= y0 + 0.01f) continue;
-                    float px = x + 0.5f, pz = z + 0.5f;
-                    var toCam = new Vector2(camPos.x - px, camPos.z - pz);
-                    if (toCam.sqrMagnitude < 0.0001f) toCam = Vector2.up;
+                    float y0 = Mathf.Max(floor, camY - R);
+                    float y1 = camY + R;
+
+                    if (y1 <= y0 + 0.01f)
+                        continue;
+
+                    float px = x + 0.5f;
+                    float pz = z + 0.5f;
+
+                    var toCam =
+                        new Vector2(
+                            camPos.x - px,
+                            camPos.z - pz);
+
+                    if (toCam.sqrMagnitude < 0.0001f)
+                        toCam = Vector2.up;
+
                     toCam.Normalize();
-                    var right = new Vector3(-toCam.y, 0, toCam.x) * 0.5f;
-                    uint h = (uint)(x * 73856093) ^ (uint)(z * 19349663);
+
+                    float halfWidth = dense ? 0.5f : 0.8f;
+
+                    var right =
+                        new Vector3(
+                            -toCam.y,
+                            0f,
+                            toCam.x) * halfWidth;
+
+                    uint h =
+                        (uint)(x * 73856093) ^
+                        (uint)(z * 19349663);
+
                     float seed = (h % 1000) / 1000f;
-                    float scroll = snow ? time * 0.35f + seed : time * 2.6f + seed * 7f;
-                    float sway = snow ? Mathf.Sin(time * 0.8f + seed * 6.28f) * 0.35f : 0f;
-                    float a = Mathf.Clamp01(1f - dist / R) * strength * (snow ? 0.9f : 0.7f);
+
+                    // Static per-column offset. Actual falling motion happens in the shader.
+                    float uOffset = snow ? seed * 0.65f : 0f;
+                    float vOffset = snow ? seed * 1.5f : seed * 7f;
+
+                    float dist = Mathf.Sqrt(distSq);
+
+                    float alpha =
+                        Mathf.Clamp01(1f - dist / R) *
+                        (snow ? 0.9f : 0.7f);
+
+                    if (!dense)
+                        alpha = Mathf.Min(1f, alpha * 1.4f);
+
                     int i = wVerts.Count;
-                    var c = new Vector3(px, 0, pz);
-                    wVerts.Add(c - right + Vector3.up * y0); wVerts.Add(c - right + Vector3.up * y1);
-                    wVerts.Add(c + right + Vector3.up * y1); wVerts.Add(c + right + Vector3.up * y0);
-                    float v0 = y0 * 0.25f + scroll, v1 = y1 * 0.25f + scroll;
-                    wUvs.Add(new Vector2(sway, v0)); wUvs.Add(new Vector2(sway, v1)); wUvs.Add(new Vector2(1f + sway, v1)); wUvs.Add(new Vector2(1f + sway, v0));
-                    var col = new Color(1f, 1f, 1f, a);
-                    for (int k = 0; k < 4; k++) wCols.Add(col);
-                    wTris.Add(i); wTris.Add(i + 1); wTris.Add(i + 2); wTris.Add(i); wTris.Add(i + 2); wTris.Add(i + 3);
+
+                    var center = new Vector3(px, 0f, pz);
+
+                    wVerts.Add(center - right + Vector3.up * y0);
+                    wVerts.Add(center - right + Vector3.up * y1);
+                    wVerts.Add(center + right + Vector3.up * y1);
+                    wVerts.Add(center + right + Vector3.up * y0);
+
+                    float v0 = y0 * 0.25f + vOffset;
+                    float v1 = y1 * 0.25f + vOffset;
+
+                    wUvs.Add(new Vector2(uOffset, v0));
+                    wUvs.Add(new Vector2(uOffset, v1));
+                    wUvs.Add(new Vector2(1f + uOffset, v1));
+                    wUvs.Add(new Vector2(1f + uOffset, v0));
+
+                    var col =
+                        new Color(
+                            1f,
+                            1f,
+                            1f,
+                            alpha);
+
+                    wCols.Add(col);
+                    wCols.Add(col);
+                    wCols.Add(col);
+                    wCols.Add(col);
+
+                    wTris.Add(i);
+                    wTris.Add(i + 1);
+                    wTris.Add(i + 2);
+
+                    wTris.Add(i);
+                    wTris.Add(i + 2);
+                    wTris.Add(i + 3);
                 }
-            mesh.Clear();
-            if (wVerts.Count == 0) return;
-            mesh.SetVertices(wVerts); mesh.SetColors(wCols); mesh.SetUVs(0, wUvs); mesh.SetTriangles(wTris, 0);
-            mesh.bounds = new Bounds(camPos, Vector3.one * (R * 2 + 4));
+
+            mesh.Clear(false);
+
+            if (wVerts.Count == 0)
+                return;
+
+            mesh.SetVertices(wVerts);
+            mesh.SetColors(wCols);
+            mesh.SetUVs(0, wUvs);
+            mesh.SetTriangles(wTris, 0, false);
+
+            mesh.bounds =
+                new Bounds(
+                    camPos,
+                    Vector3.one * (R * 2 + 4));
         }
 
         // ------------------------------------------------------------------ textures
@@ -448,100 +552,275 @@ namespace MCR
             return t;
         }
 
-        // ------------------------------------------------------------------ render
         public void Render(Camera cam, World w, GameSession session, Player player, float partial)
         {
             if (!visible || cam == null || root == null || w == null) return;
+
             var camPos = cam.transform.position;
             root.transform.position = new Vector3(camPos.x, 0, camPos.z);
+
             float day = session != null ? session.DaylightFactor(w) : 1f;
             if (!w.hasSkyLight) day = w.dim == DimensionId.Nether ? 0.4f : 0.25f;
+
             float rain = session != null ? session.RainLevel(partial) : 0f;
             float thunder = session != null ? session.ThunderLevel(partial) : 0f;
+
             flash = Mathf.Max(0f, flash - Time.deltaTime * 4f);
             thunderFade = Mathf.Max(0f, thunderFade - Time.deltaTime * 0.6f);
 
             float skyScale = Mathf.Clamp(cam.farClipPlane * 0.9f, 200f, 900f);
+
             Color skyTop, skyBottom;
             SkyColors(w, day, rain, thunder, out skyTop, out skyBottom);
+
             skyTop = Color.Lerp(skyTop, Color.white, flash * 0.6f);
             WorldLighting.Update(session, w, player, partial, Time.time, skyBottom);
 
             // dome: fog colour at the horizon blending into the sky colour overhead, darker below the horizon
             var fog = WorldLighting.fogColor;
-            if (w.dim == DimensionId.End) ColorDome(Color.white, Color.white, Color.white); // the texture carries the colour
-            else ColorDome(fog, skyTop, Color.Lerp(fog, skyBottom * 0.35f, 0.6f));
+
+            if (w.dim == DimensionId.End)
+                ColorDome(Color.white, Color.white, Color.white);
+            else
+                ColorDome(fog, skyTop, Color.Lerp(fog, skyBottom * 0.35f, 0.6f));
+
             domeMat.SetColor("_Color", Color.white);
+
             if (w.dim == DimensionId.End)
             {
                 if (endSkyTex == null) endSkyTex = PaintEndSky();
                 domeMat.SetTexture("_MainTex", endSkyTex);
             }
-            else domeMat.SetTexture("_MainTex", Texture2D.whiteTexture);
+            else
+            {
+                domeMat.SetTexture("_MainTex", Texture2D.whiteTexture);
+            }
+
             var domeTrs = Matrix4x4.TRS(camPos, Quaternion.identity, Vector3.one * skyScale);
             Graphics.DrawMesh(dome, domeTrs, domeMat, 0, cam);
 
             if (w.dim == DimensionId.Overworld)
             {
-                // stars fade in at night; the sun and moon ride the celestial angle
+                // stars
                 float starAlpha = Mathf.Clamp01(1f - day * 1.6f) * (1f - rain * 0.7f);
+
                 if (starAlpha > 0.01f)
                 {
                     starMat.SetColor("_Color", new Color(1, 1, 1, starAlpha));
-                    float starAngle = session != null ? session.CelestialAngle(partial) * 360f : 0f;
-                    Graphics.DrawMesh(starMesh, Matrix4x4.TRS(camPos, Quaternion.Euler(0, 0, starAngle), Vector3.one * skyScale * 0.85f), starMat, 0, cam);
+
+                    float starAngle =
+                        session != null
+                            ? session.CelestialAngle(partial) * 360f
+                            : 0f;
+
+                    Graphics.DrawMesh(
+                        starMesh,
+                        Matrix4x4.TRS(
+                            camPos,
+                            Quaternion.Euler(0, 0, starAngle),
+                            Vector3.one * skyScale * 0.85f),
+                        starMat,
+                        0,
+                        cam);
                 }
-                float angle = session != null ? session.CelestialAngle(partial) * 360f : 0f;
-                // noon puts the sun overhead; it rises in the east (+X) and sets in the west (-X)
+
+                float angle =
+                    session != null
+                        ? session.CelestialAngle(partial) * 360f
+                        : 0f;
+
+                // sun
                 var sunDir = Quaternion.Euler(0, 0, angle) * Vector3.up;
                 var sunPos = camPos + sunDir * skyScale * 0.7f;
-                sunMat.SetColor("_Color", new Color(1, 1, 1, Mathf.Clamp01(1f - rain * 0.8f)));
-                Graphics.DrawMesh(quad, Bill(sunPos, cam, skyScale * 0.07f), sunMat, 0, cam);
-                var moonDir = -sunDir;
-                int phase = session != null ? session.DayCount % 8 : 0;
-                if (moonPhases == null) { moonPhases = new Texture2D[8]; for (int i = 0; i < 8; i++) moonPhases[i] = PaintMoonPhase(i); }
-                moonMat.SetTexture("_MainTex", moonPhases[phase]);
-                var moonPos = camPos + moonDir * skyScale * 0.7f;
-                moonMat.SetColor("_Color", new Color(1, 1, 1, Mathf.Clamp01(1f - rain * 0.6f) * (1f - day)));
-                Graphics.DrawMesh(quad, Bill(moonPos, cam, skyScale * 0.055f), moonMat, 0, cam);
 
-                // clouds: the wrapping cell tile drawn 3x3 around the camera, drifting slowly along +X
+                sunMat.SetColor(
+                    "_Color",
+                    new Color(
+                        1,
+                        1,
+                        1,
+                        Mathf.Clamp01(1f - rain * 0.8f)));
+
+                Graphics.DrawMesh(
+                    quad,
+                    Bill(sunPos, cam, skyScale * 0.07f),
+                    sunMat,
+                    0,
+                    cam);
+
+                // moon
+                var moonDir = -sunDir;
+
+                int phase =
+                    session != null
+                        ? session.DayCount % 8
+                        : 0;
+
+                if (moonPhases == null)
+                {
+                    moonPhases = new Texture2D[8];
+
+                    for (int i = 0; i < 8; i++)
+                        moonPhases[i] = PaintMoonPhase(i);
+                }
+
+                moonMat.SetTexture("_MainTex", moonPhases[phase]);
+
+                var moonPos =
+                    camPos +
+                    moonDir * skyScale * 0.7f;
+
+                moonMat.SetColor(
+                    "_Color",
+                    new Color(
+                        1,
+                        1,
+                        1,
+                        Mathf.Clamp01(1f - rain * 0.6f) * (1f - day)));
+
+                Graphics.DrawMesh(
+                    quad,
+                    Bill(moonPos, cam, skyScale * 0.055f),
+                    moonMat,
+                    0,
+                    cam);
+
+                // clouds
                 cloudScroll += Time.deltaTime * 0.6f;
-                if (cloudScroll > CloudTile) cloudScroll -= CloudTile;
+
+                if (cloudScroll > CloudTile)
+                    cloudScroll -= CloudTile;
+
                 float cloudY = Mathf.Max(w.seaLevel + 129f, 160f);
-                var night = new Color(0.10f, 0.10f, 0.14f);
-                var cloudCol = Color.Lerp(night, Color.white, Mathf.Clamp01(day * 1.2f));
-                cloudCol = Color.Lerp(cloudCol, cloudCol * 0.62f, rain);
+
+                var night =
+                    new Color(
+                        0.10f,
+                        0.10f,
+                        0.14f);
+
+                var cloudCol =
+                    Color.Lerp(
+                        night,
+                        Color.white,
+                        Mathf.Clamp01(day * 1.2f));
+
+                cloudCol =
+                    Color.Lerp(
+                        cloudCol,
+                        cloudCol * 0.62f,
+                        rain);
+
                 cloudCol.a = 0.8f;
+
                 cloudMat.SetColor("_Color", cloudCol);
-                float ox = Mathf.Floor((camPos.x + cloudScroll) / CloudTile) * CloudTile - cloudScroll;
-                float oz = Mathf.Floor(camPos.z / CloudTile) * CloudTile;
+
+                float ox =
+                    Mathf.Floor((camPos.x + cloudScroll) / CloudTile) *
+                    CloudTile -
+                    cloudScroll;
+
+                float oz =
+                    Mathf.Floor(camPos.z / CloudTile) *
+                    CloudTile;
+
                 for (int tz = -1; tz <= 1; tz++)
                     for (int tx = -1; tx <= 1; tx++)
                     {
-                        var m = Matrix4x4.Translate(new Vector3(ox + tx * CloudTile, cloudY, oz + tz * CloudTile));
+                        var m =
+                            Matrix4x4.Translate(
+                                new Vector3(
+                                    ox + tx * CloudTile,
+                                    cloudY,
+                                    oz + tz * CloudTile));
+
                         Graphics.DrawMesh(cloudMesh, m, cloudDepthMat, 0, cam);
                         Graphics.DrawMesh(cloudMesh, m, cloudMat, 0, cam);
                     }
             }
 
-            // rain and snow: per-column sheets around the camera that stop at the first roof
-            if (rain > 0.01f && w.dim == DimensionId.Overworld && player != null)
+            // rain and snow
+            if (rain > 0.01f &&
+                w.dim == DimensionId.Overworld &&
+                player != null)
             {
-                float tint = Mathf.Lerp(0.35f, 1f, Mathf.Clamp01(day));
-                rainMat.SetColor("_Color", new Color(tint, tint, tint, 1f));
-                snowMat.SetColor("_Color", new Color(tint, tint, tint, 1f));
+                float tint =
+                    Mathf.Lerp(
+                        0.35f,
+                        1f,
+                        Mathf.Clamp01(day));
+
+                // Most rain texture pixels are transparent. Discard those before blending.
+                rainMat.SetFloat("_Cutoff", 0.02f);
+                snowMat.SetFloat("_Cutoff", 0.02f);
+
+                // Weather strength is controlled by material alpha now,
+                // so changing rain intensity does not force a mesh rebuild.
+                rainMat.SetColor(
+                    "_Color",
+                    new Color(tint, tint, tint, rain));
+
+                snowMat.SetColor(
+                    "_Color",
+                    new Color(tint, tint, tint, rain));
+
+                // Per-frame movement without rebuilding geometry.
+                rainMat.SetTextureOffset(
+                    "_MainTex",
+                    new Vector2(
+                        0f,
+                        Mathf.Repeat(Time.time * 2.6f, 1f)));
+
+                snowMat.SetTextureOffset(
+                    "_MainTex",
+                    new Vector2(
+                        Mathf.Sin(Time.time * 0.8f) * 0.12f,
+                        Mathf.Repeat(Time.time * 0.35f, 1f)));
+
                 weatherTimer -= Time.deltaTime;
+
+                // Geometry only tracks camera / roofs / biome.
+                // Five rebuilds per second instead of twenty.
                 if (weatherTimer <= 0f)
                 {
-                    weatherTimer = 0.05f;
-                    BuildWeather(rainMesh, w, camPos, false, rain, Time.time);
-                    BuildWeather(snowMesh, w, camPos, true, rain, Time.time);
+                    weatherTimer = 0.20f;
+
+                    BuildWeather(
+                        rainMesh,
+                        w,
+                        camPos,
+                        false);
+
+                    BuildWeather(
+                        snowMesh,
+                        w,
+                        camPos,
+                        true);
                 }
-                if (rainMesh.vertexCount > 0) Graphics.DrawMesh(rainMesh, Matrix4x4.identity, rainMat, 0, cam);
-                if (snowMesh.vertexCount > 0) Graphics.DrawMesh(snowMesh, Matrix4x4.identity, snowMat, 0, cam);
+
+                if (rainMesh.vertexCount > 0)
+                    Graphics.DrawMesh(
+                        rainMesh,
+                        Matrix4x4.identity,
+                        rainMat,
+                        0,
+                        cam);
+
+                if (snowMesh.vertexCount > 0)
+                    Graphics.DrawMesh(
+                        snowMesh,
+                        Matrix4x4.identity,
+                        snowMat,
+                        0,
+                        cam);
+            }
+            else if (w.dim == DimensionId.Overworld)
+            {
+                // Weather should rebuild immediately next time rain starts.
+                weatherTimer = 0f;
             }
         }
+
         float weatherTimer;
 
         static Matrix4x4 Bill(Vector3 pos, Camera cam, float size)
