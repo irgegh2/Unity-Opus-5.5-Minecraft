@@ -16,9 +16,30 @@ namespace MCR
         static readonly Dictionary<Texture, Material> entityMats = new Dictionary<Texture, Material>();
         static readonly Dictionary<Texture, Material> entityMatsT = new Dictionary<Texture, Material>();
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetRuntimeState()
+        {
+            BlockArray = null;
+            ChunkOpaque = ChunkCutout = ChunkTranslucent = ChunkCutoutNoCull = null;
+            ChunkMats = null;
+            ItemMats = null;
+            ChunkShader = EntityShader = UnlitShader = null;
+            Ready = false;
+            entityMats.Clear();
+            entityMatsT.Clear();
+            layerPixelCache.Clear();
+        }
+
         public static void Init()
         {
-            if (Ready) return;
+            if (Ready && ChunkShader != null && EntityShader != null && UnlitShader != null &&
+                BlockArray != null && ChunkOpaque != null && ChunkCutout != null &&
+                ChunkTranslucent != null && ChunkCutoutNoCull != null)
+                return;
+
+            Ready = false;
+            entityMats.Clear();
+            entityMatsT.Clear();
             ChunkShader = Shader.Find("MCR/Chunk");
             EntityShader = Shader.Find("MCR/Entity");
             UnlitShader = Shader.Find("MCR/Unlit");

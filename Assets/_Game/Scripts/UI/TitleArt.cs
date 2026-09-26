@@ -16,12 +16,38 @@ namespace MCR
         static Mesh cube;
         static Material[] faceMats;
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetRuntimeState()
+        {
+            panoramaTried = false;
+            cube = null;
+            faceMats = null;
+            logos.Clear();
+        }
+
         /// <summary>True when the six panorama faces are available in Resources/Panorama.</summary>
         public static bool HasPanorama { get { LoadPanorama(); return faceMats != null; } }
 
         static void LoadPanorama()
         {
-            if (panoramaTried) return;
+            if (panoramaTried)
+            {
+                // faceMats == null means the panorama resources were genuinely unavailable;
+                // keep that failed lookup cached for this play session.
+                if (faceMats == null) return;
+
+                bool alive = cube != null && faceMats.Length == 6;
+                if (alive)
+                    for (int i = 0; i < faceMats.Length; i++)
+                        if (faceMats[i] == null) { alive = false; break; }
+                if (alive) return;
+
+                // Non-null managed references with destroyed Unity objects are stale.
+                panoramaTried = false;
+                cube = null;
+                faceMats = null;
+            }
+
             panoramaTried = true;
             var faces = new Texture2D[6];
             for (int i = 0; i < 6; i++)

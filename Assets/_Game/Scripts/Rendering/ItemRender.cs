@@ -20,6 +20,19 @@ namespace MCR
         static Material orbMat;
         static readonly Dictionary<int, Mesh> orbMeshes = new Dictionary<int, Mesh>();
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetRuntimeState()
+        {
+            blockMeshes.Clear();
+            extruded.Clear();
+            flat.Clear();
+            orbMeshes.Clear();
+            arrowMesh = null;
+            orbTex = null;
+            orbMat = null;
+            BlenderItems.ClearCaches();
+        }
+
         // ------------------------------------------------------------------ layers
         /// <summary>Texture array layer of the flat sprite used for this item, or -1 if it renders as a block.</summary>
         public static int SpriteLayer(Item it)
@@ -55,7 +68,11 @@ namespace MCR
         // ------------------------------------------------------------------ blocks
         public static Mesh BlockMesh(ushort state)
         {
-            if (blockMeshes.TryGetValue(state, out var m)) return m;
+            if (blockMeshes.TryGetValue(state, out var m))
+            {
+                if (m != null) return m;
+                blockMeshes.Remove(state);
+            }
             m = ChunkMesher.BuildSingleBlock(state, true);
             blockMeshes[state] = m;
             return m;
@@ -123,7 +140,11 @@ namespace MCR
         /// <summary>Flat double-sided sprite quad centred on the origin (1 unit wide), readable when viewed along +Z.</summary>
         public static Mesh FlatMesh(int layer)
         {
-            if (flat.TryGetValue(layer, out var m)) return m;
+            if (flat.TryGetValue(layer, out var m))
+            {
+                if (m != null) return m;
+                flat.Remove(layer);
+            }
             var vs = new List<ChunkVertex>(); var idx = new List<int>();
             var white = new Color32(255, 255, 255, 255);
             Quad(vs, idx, new Vector3(-0.5f, -0.5f, 0), new Vector3(-0.5f, 0.5f, 0), new Vector3(0.5f, 0.5f, 0), new Vector3(0.5f, -0.5f, 0),
@@ -136,7 +157,11 @@ namespace MCR
         /// <summary>One-pixel-thick extrusion of a 16x16 sprite layer (front, back and an edge strip for every opaque border pixel).</summary>
         public static Mesh ExtrudedMesh(int layer)
         {
-            if (extruded.TryGetValue(layer, out var m)) return m;
+            if (extruded.TryGetValue(layer, out var m))
+            {
+                if (m != null) return m;
+                extruded.Remove(layer);
+            }
             var px = Res.GetLayerPixels(layer); // top-down rows
             var vs = new List<ChunkVertex>(); var idx = new List<int>();
             var white = new Color32(255, 255, 255, 255);
@@ -287,7 +312,9 @@ namespace MCR
 
         static void EnsureOrb()
         {
-            if (orbTex != null) return;
+            if (orbTex != null && orbMat != null) return;
+            orbTex = null;
+            orbMat = null;
             orbTex = new Texture2D(64, 16, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp, name = "xp_orbs" };
             var px = new Color32[64 * 16];
             // four orb sizes side by side, original pixel design: bright core, green-yellow body, dark rim
