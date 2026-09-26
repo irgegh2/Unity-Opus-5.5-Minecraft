@@ -51,7 +51,8 @@ namespace MCR.EditorTools
 
             Directory.CreateDirectory(TargetRoot);
             int count = 0;
-            using (var zip = ZipFile.OpenRead(jar))
+            using (var fs = File.OpenRead(jar))
+            using (var zip = new ZipArchive(fs, ZipArchiveMode.Read))
             {
                 const string prefix = "assets/minecraft/textures/";
                 foreach (var entry in zip.Entries)
