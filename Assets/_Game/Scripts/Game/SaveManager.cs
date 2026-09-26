@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Threading;
 using UnityEngine;
 
 namespace MCR
@@ -37,6 +39,14 @@ namespace MCR
         public Dictionary<string, string> playerData;
         public float lastSaveTime;
 
+        struct PendingWrite { public string path; public byte[] data; }
+        readonly ConcurrentQueue<PendingWrite> pendingWrites = new ConcurrentQueue<PendingWrite>();
+        readonly AutoResetEvent writerSignal = new AutoResetEvent(false);
+        readonly ManualResetEventSlim writerIdle = new ManualResetEventSlim(true);
+        readonly Thread writerThread;
+        volatile bool writerRunning = true;
+        int pendingWriteCount;
+
         public static string SavesRoot => Path.Combine(Application.persistentDataPath, "saves");
 
         public SaveManager(GameSession s, string folder)
@@ -44,6 +54,63 @@ namespace MCR
             session = s;
             dir = Path.Combine(SavesRoot, folder);
             Directory.CreateDirectory(dir);
+            writerThread = new Thread(WriterLoop) { IsBackground = true, Name = "MCR-SaveWriter" };
+            writerThread.Start();
+        }
+
+        void QueueWrite(string path, byte[] data)
+        {
+            writerIdle.Reset();
+            Interlocked.Increment(ref pendingWriteCount);
+            pendingWrites.Enqueue(new PendingWrite { path = path, data = data });
+            writerSignal.Set();
+        }
+
+        void WriterLoop()
+        {
+            while (writerRunning || Volatile.Read(ref pendingWriteCount) > 0)
+            {
+                if (!pendingWrites.TryDequeue(out var work))
+                {
+                    writerSignal.WaitOne(100);
+                    continue;
+                }
+
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(work.path));
+                    string tmp = work.path + ".tmp";
+                    File.WriteAllBytes(tmp, work.data);
+                    if (File.Exists(work.path)) File.Delete(work.path);
+                    File.Move(tmp, work.path);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError("[Save] background write failed " + work.path + ": " + e);
+                }
+                finally
+                {
+                    if (Interlocked.Decrement(ref pendingWriteCount) == 0)
+                        writerIdle.Set();
+                }
+            }
+            writerIdle.Set();
+        }
+
+        public void FlushPendingWrites()
+        {
+            writerIdle.Wait();
+        }
+
+        public void ShutdownWriter()
+        {
+            FlushPendingWrites();
+            if (!writerRunning) return;
+            writerRunning = false;
+            writerSignal.Set();
+            try { writerThread.Join(); } catch { }
+            writerSignal.Dispose();
+            writerIdle.Dispose();
         }
 
         static long RegionKey(int rx, int rz) => ((long)rx << 32) ^ (uint)rz;
@@ -252,29 +319,33 @@ namespace MCR
         {
             int rx = (int)(rk >> 32), rz = (int)(uint)(rk & 0xFFFFFFFF);
             string path = RegionPath(dim, rx, rz);
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            string tmp = path + ".tmp";
-            using (var fs = File.Create(tmp))
-            using (var w = new BinaryWriter(fs, Encoding.UTF8))
+
+            byte[] snapshot;
+            using (var ms = new MemoryStream())
             {
-                w.Write(Magic); w.Write(Version); w.Write(reg.Count);
-                foreach (var rec in reg.Values)
+                using (var w = new BinaryWriter(ms, Encoding.UTF8, true))
                 {
-                    w.Write(rec.cx); w.Write(rec.cz); w.Write(rec.entitiesHandled);
-                    var palIdx = new Dictionary<ushort, int>(); var pal = new List<ushort>();
-                    foreach (var st in rec.mods.Values) if (!palIdx.ContainsKey(st)) { palIdx[st] = pal.Count; pal.Add(st); }
-                    w.Write(pal.Count);
-                    foreach (var st in pal) { var b = Blocks.ByState[st]; w.Write(b.id); w.Write((ushort)(st - b.baseState)); }
-                    w.Write(rec.mods.Count);
-                    foreach (var kv in rec.mods) { w.Write(kv.Key); w.Write((ushort)palIdx[kv.Value]); }
-                    w.Write(rec.blockEntities.Count);
-                    foreach (var (idx, type, data) in rec.blockEntities) { w.Write(idx); w.Write(type); w.Write(EncodeDict(data)); }
-                    w.Write(rec.entities.Count);
-                    foreach (var e in rec.entities) { w.Write(e.type ?? ""); w.Write(e.x); w.Write(e.y); w.Write(e.z); w.Write(e.yaw); w.Write(e.pitch); w.Write(e.data ?? ""); }
+                    w.Write(Magic); w.Write(Version); w.Write(reg.Count);
+                    foreach (var rec in reg.Values)
+                    {
+                        w.Write(rec.cx); w.Write(rec.cz); w.Write(rec.entitiesHandled);
+                        var palIdx = new Dictionary<ushort, int>(); var pal = new List<ushort>();
+                        foreach (var st in rec.mods.Values) if (!palIdx.ContainsKey(st)) { palIdx[st] = pal.Count; pal.Add(st); }
+                        w.Write(pal.Count);
+                        foreach (var st in pal) { var b = Blocks.ByState[st]; w.Write(b.id); w.Write((ushort)(st - b.baseState)); }
+                        w.Write(rec.mods.Count);
+                        foreach (var kv in rec.mods) { w.Write(kv.Key); w.Write((ushort)palIdx[kv.Value]); }
+                        w.Write(rec.blockEntities.Count);
+                        foreach (var (idx, type, data) in rec.blockEntities) { w.Write(idx); w.Write(type); w.Write(EncodeDict(data)); }
+                        w.Write(rec.entities.Count);
+                        foreach (var e in rec.entities) { w.Write(e.type ?? ""); w.Write(e.x); w.Write(e.y); w.Write(e.z); w.Write(e.yaw); w.Write(e.pitch); w.Write(e.data ?? ""); }
+                    }
+                    w.Flush();
                 }
+                snapshot = ms.ToArray();
             }
-            if (File.Exists(path)) File.Delete(path);
-            File.Move(tmp, path);
+
+            QueueWrite(path, snapshot);
         }
 
         // ------------------------------------------------------------------ whole save
@@ -327,9 +398,7 @@ namespace MCR
             var sb = new StringBuilder();
             foreach (var kv in d) sb.Append(kv.Key).Append('=').Append(kv.Value.Replace("\\", "\\\\").Replace("\n", "\\n")).Append('\n');
             string path = Path.Combine(dir, "level.txt");
-            File.WriteAllText(path + ".tmp", sb.ToString(), Encoding.UTF8);
-            if (File.Exists(path)) File.Delete(path);
-            File.Move(path + ".tmp", path);
+            QueueWrite(path, Encoding.UTF8.GetBytes(sb.ToString()));
         }
 
         static string B(bool b) => b ? "1" : "0";

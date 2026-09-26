@@ -97,7 +97,12 @@ namespace MCR
         void OnApplicationQuit()
         {
             if (!Playing || session?.save == null || player == null) return;
-            try { SaveAll(); } catch (Exception e) { Debug.LogError("[Save] on quit: " + e); }
+            try
+            {
+                SaveAll();
+                session.save.ShutdownWriter();
+            }
+            catch (Exception e) { Debug.LogError("[Save] on quit: " + e); }
         }
 
         void OnDestroy()
@@ -171,6 +176,9 @@ namespace MCR
 
         void ClearWorlds()
         {
+            // Finish any queued disk writes before the old session is released.
+            session?.save?.ShutdownWriter();
+
             // the scene objects of the old worlds (mob and item models, chests, the held item, particles) go with them
             if (session != null)
                 foreach (var w in session.worlds)
