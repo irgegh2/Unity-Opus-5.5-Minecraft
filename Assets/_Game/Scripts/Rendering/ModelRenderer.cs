@@ -48,6 +48,7 @@ namespace MCR
 
         static GameObject AddPart(GameObject parent, Mesh mesh, Material[] mats, string name)
         {
+            if (mesh == null) return null;
             var go = new GameObject(name);
             go.transform.SetParent(parent.transform, false);
             var mf = go.AddComponent<MeshFilter>();
@@ -99,10 +100,17 @@ namespace MCR
         }
         static readonly Dictionary<string, SkinData> cache = new Dictionary<string, SkinData>();
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetRuntimeState() => cache.Clear();
+
         public static SkinData Get(string skin, int w, int h, string variantSalt = null)
         {
             string key = skin + (variantSalt != null ? "#" + variantSalt : "");
-            if (cache.TryGetValue(key, out var d)) return d;
+            if (cache.TryGetValue(key, out var d))
+            {
+                if (d != null && d.opaque != null) return d;
+                cache.Remove(key);
+            }
 
             // The local player uses the actual classic/wide 64x64 Steve texture.
             // It is referenced by the generated player material under Resources, while

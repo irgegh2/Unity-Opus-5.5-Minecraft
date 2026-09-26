@@ -166,10 +166,29 @@ namespace MCR
         }
         static readonly Dictionary<string, BoneMesh[]> cache = new Dictionary<string, BoneMesh[]>();
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetRuntimeState() => cache.Clear();
+
+        static bool MeshesAlive(BoneMesh[] meshes)
+        {
+            if (meshes == null) return false;
+            foreach (var bm in meshes)
+            {
+                if (bm == null) continue;
+                if (!object.ReferenceEquals(bm.main, null) && bm.main == null) return false;
+                foreach (var kv in bm.optional) if (kv.Value == null) return false;
+            }
+            return true;
+        }
+
         /// <summary>Mesh for each bone (null if no cubes); vertices relative to the bone pivot, in blocks.</summary>
         public static BoneMesh[] BoneMeshes(ModelDef def)
         {
-            if (cache.TryGetValue(def.name, out var m)) return m;
+            if (cache.TryGetValue(def.name, out var m))
+            {
+                if (MeshesAlive(m)) return m;
+                cache.Remove(def.name);
+            }
             m = new BoneMesh[def.bones.Count];
             for (int i = 0; i < def.bones.Count; i++)
             {
