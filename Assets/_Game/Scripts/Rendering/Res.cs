@@ -86,7 +86,7 @@ namespace MCR
             {
                 int h = 17;
                 foreach (var n in Tex.Names) h = h * 31 + Hash.StringHash(n);
-                return h ^ TextureGen.Version;
+                return h ^ TextureGen.Version ^ VanillaTextures.Revision;
             }
         }
 
@@ -151,6 +151,7 @@ namespace MCR
 
         public static Color32[] LayerPixels(string name)
         {
+            if (VanillaTextures.TryPixels(name, out var vanilla)) return vanilla;
             if (name.StartsWith("item/")) return ItemSprites.Pixels(name.Substring(5));
             if (name.StartsWith("particle/")) return ParticleTextures.Pixels(name.Substring(9));
             return TextureGen.Generate(name);

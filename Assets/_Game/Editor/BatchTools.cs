@@ -89,6 +89,7 @@ namespace MCR.EditorTools
             Directory.CreateDirectory(GeneratedResources);
             ConfigureRenderPipeline();
             EnsureShaderRefs();
+            VanillaTextureImporter.EnsureImported();
             BakeBlockTextureArray();
             ExportModelData();
             ExportItemSprites();
