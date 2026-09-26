@@ -377,12 +377,21 @@ namespace MCR
             tickCount++;
             RunScheduledTicks();
             RandomTicks(playerPos);
-            foreach (var c in chunks.Values)
-            {
-                if (c.stage < (int)ChunkStage.Final) continue;
-                if (c.blockEntities.Count == 0) continue;
-                foreach (var be in c.blockEntities.Values) if (be.ticks) be.Tick();
-            }
+
+            int pcx = Mathf.FloorToInt(playerPos.x) >> 4;
+            int pcz = Mathf.FloorToInt(playerPos.z) >> 4;
+            int sd = simulationDistance;
+
+            for (int dz = -sd; dz <= sd; dz++)
+                for (int dx = -sd; dx <= sd; dx++)
+                {
+                    var c = GetChunk(pcx + dx, pcz + dz);
+                    if (c == null || c.stage < (int)ChunkStage.Final) continue;
+                    if (c.blockEntities.Count == 0) continue;
+
+                    foreach (var be in c.blockEntities.Values)
+                        if (be.ticks) be.Tick();
+                }
         }
 
         public int randomTickSpeed = 3;
