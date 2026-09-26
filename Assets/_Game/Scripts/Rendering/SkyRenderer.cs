@@ -251,12 +251,10 @@ namespace MCR
         readonly List<int> wTris = new List<int>();
 
         /// <summary>
-        /// Weather sheets around the player. Nearby columns keep full density for good roof behaviour;
-        /// farther columns are sampled more sparsely to reduce transparent overdraw.
-        /// Animation itself is done through the material UV offset, so geometry is rebuilt only a few times
-        /// per second instead of twenty times per second.
+        /// Weather sheets around the player. Nearby columns keep full density;
+        /// farther columns are sampled sparsely to reduce transparent overdraw.
         /// </summary>
-        void BuildWeather(Mesh mesh, World w, Vector3 camPos, bool snow)
+        void BuildWeather(Mesh mesh, World w, Vector3 camPos, bool snow, float strength, float time)
         {
             wVerts.Clear();
             wCols.Clear();
@@ -281,76 +279,54 @@ namespace MCR
 
                     int x = cx + dx;
                     int z = cz + dz;
-
                     bool dense = distSq <= denseR2;
 
-                    // Full density near the player. Farther out, one sheet roughly covers a 2x2 patch.
                     if (!dense && (((x & 1) != 0) || ((z & 1) != 0)))
                         continue;
 
-                    // Precipitation belongs to the surface biome. Using the 3D biome at camera height
-                    // caused rain/snow to appear and disappear in strange local patches.
                     var biome = w.GetSurfaceBiome(x, z);
-
                     if (biome == null || biome.precipitation == Precipitation.None)
                         continue;
 
-                    bool snowy =
-                        biome.precipitation == Precipitation.Snow ||
-                        biome.snowy;
-
-                    if (snowy != snow)
-                        continue;
+                    bool snowy = biome.precipitation == Precipitation.Snow || biome.snowy;
+                    if (snowy != snow) continue;
 
                     float floor = w.SkyHeight(x, z);
                     float y0 = Mathf.Max(floor, camY - R);
                     float y1 = camY + R;
-
-                    if (y1 <= y0 + 0.01f)
-                        continue;
+                    if (y1 <= y0 + 0.01f) continue;
 
                     float px = x + 0.5f;
                     float pz = z + 0.5f;
 
-                    var toCam =
-                        new Vector2(
-                            camPos.x - px,
-                            camPos.z - pz);
-
-                    if (toCam.sqrMagnitude < 0.0001f)
-                        toCam = Vector2.up;
-
+                    var toCam = new Vector2(camPos.x - px, camPos.z - pz);
+                    if (toCam.sqrMagnitude < 0.0001f) toCam = Vector2.up;
                     toCam.Normalize();
 
                     float halfWidth = dense ? 0.5f : 0.8f;
+                    var right = new Vector3(-toCam.y, 0f, toCam.x) * halfWidth;
 
-                    var right =
-                        new Vector3(
-                            -toCam.y,
-                            0f,
-                            toCam.x) * halfWidth;
-
-                    uint h =
-                        (uint)(x * 73856093) ^
-                        (uint)(z * 19349663);
-
+                    uint h = (uint)(x * 73856093) ^ (uint)(z * 19349663);
                     float seed = (h % 1000) / 1000f;
 
-                    // Static per-column offset. Actual falling motion happens in the shader.
-                    float uOffset = snow ? seed * 0.65f : 0f;
-                    float vOffset = snow ? seed * 1.5f : seed * 7f;
+                    float scroll = snow
+                        ? time * 0.35f + seed
+                        : time * 2.6f + seed * 7f;
+
+                    float sway = snow
+                        ? Mathf.Sin(time * 0.8f + seed * 6.28f) * 0.35f
+                        : 0f;
 
                     float dist = Mathf.Sqrt(distSq);
-
                     float alpha =
                         Mathf.Clamp01(1f - dist / R) *
+                        strength *
                         (snow ? 0.9f : 0.7f);
 
                     if (!dense)
                         alpha = Mathf.Min(1f, alpha * 1.4f);
 
                     int i = wVerts.Count;
-
                     var center = new Vector3(px, 0f, pz);
 
                     wVerts.Add(center - right + Vector3.up * y0);
@@ -358,21 +334,15 @@ namespace MCR
                     wVerts.Add(center + right + Vector3.up * y1);
                     wVerts.Add(center + right + Vector3.up * y0);
 
-                    float v0 = y0 * 0.25f + vOffset;
-                    float v1 = y1 * 0.25f + vOffset;
+                    float v0 = y0 * 0.25f + scroll;
+                    float v1 = y1 * 0.25f + scroll;
 
-                    wUvs.Add(new Vector2(uOffset, v0));
-                    wUvs.Add(new Vector2(uOffset, v1));
-                    wUvs.Add(new Vector2(1f + uOffset, v1));
-                    wUvs.Add(new Vector2(1f + uOffset, v0));
+                    wUvs.Add(new Vector2(sway, v0));
+                    wUvs.Add(new Vector2(sway, v1));
+                    wUvs.Add(new Vector2(1f + sway, v1));
+                    wUvs.Add(new Vector2(1f + sway, v0));
 
-                    var col =
-                        new Color(
-                            1f,
-                            1f,
-                            1f,
-                            alpha);
-
+                    var col = new Color(1f, 1f, 1f, alpha);
                     wCols.Add(col);
                     wCols.Add(col);
                     wCols.Add(col);
@@ -381,26 +351,19 @@ namespace MCR
                     wTris.Add(i);
                     wTris.Add(i + 1);
                     wTris.Add(i + 2);
-
                     wTris.Add(i);
                     wTris.Add(i + 2);
                     wTris.Add(i + 3);
                 }
 
             mesh.Clear(false);
-
-            if (wVerts.Count == 0)
-                return;
+            if (wVerts.Count == 0) return;
 
             mesh.SetVertices(wVerts);
             mesh.SetColors(wCols);
             mesh.SetUVs(0, wUvs);
             mesh.SetTriangles(wTris, 0, false);
-
-            mesh.bounds =
-                new Bounds(
-                    camPos,
-                    Vector3.one * (R * 2 + 4));
+            mesh.bounds = new Bounds(camPos, Vector3.one * (R * 2 + 4));
         }
 
         // ------------------------------------------------------------------ textures
@@ -750,52 +713,38 @@ namespace MCR
                         1f,
                         Mathf.Clamp01(day));
 
-                // Most rain texture pixels are transparent. Discard those before blending.
-                rainMat.SetFloat("_Cutoff", 0.02f);
-                snowMat.SetFloat("_Cutoff", 0.02f);
-
-                // Weather strength is controlled by material alpha now,
-                // so changing rain intensity does not force a mesh rebuild.
                 rainMat.SetColor(
                     "_Color",
-                    new Color(tint, tint, tint, rain));
+                    new Color(tint, tint, tint, 1f));
 
                 snowMat.SetColor(
                     "_Color",
-                    new Color(tint, tint, tint, rain));
-
-                // Per-frame movement without rebuilding geometry.
-                rainMat.SetTextureOffset(
-                    "_MainTex",
-                    new Vector2(
-                        0f,
-                        Mathf.Repeat(Time.time * 2.6f, 1f)));
-
-                snowMat.SetTextureOffset(
-                    "_MainTex",
-                    new Vector2(
-                        Mathf.Sin(Time.time * 0.8f) * 0.12f,
-                        Mathf.Repeat(Time.time * 0.35f, 1f)));
+                    new Color(tint, tint, tint, 1f));
 
                 weatherTimer -= Time.deltaTime;
 
-                // Geometry only tracks camera / roofs / biome.
-                // Five rebuilds per second instead of twenty.
+                // Rebuild less often than the original implementation while
+                // retaining sparse distant weather geometry.
                 if (weatherTimer <= 0f)
                 {
-                    weatherTimer = 0.20f;
+                    weatherTimer = 0.10f;
+                    float weatherTime = Time.time;
 
                     BuildWeather(
                         rainMesh,
                         w,
                         camPos,
-                        false);
+                        false,
+                        rain,
+                        weatherTime);
 
                     BuildWeather(
                         snowMesh,
                         w,
                         camPos,
-                        true);
+                        true,
+                        rain,
+                        weatherTime);
                 }
 
                 if (rainMesh.vertexCount > 0)
@@ -816,7 +765,6 @@ namespace MCR
             }
             else if (w.dim == DimensionId.Overworld)
             {
-                // Weather should rebuild immediately next time rain starts.
                 weatherTimer = 0f;
             }
         }
