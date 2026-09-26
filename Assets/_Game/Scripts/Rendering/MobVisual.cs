@@ -28,6 +28,8 @@ namespace MCR
         float heightOffset;
         GameObject heldVisual, heldOffVisual, equipVisual;
         string heldKey, heldOffKey, equipKey;
+        int heldCount, heldOffCount;
+        MaterialPropertyBlock alphaMpb;
         Renderer[] rends;
         float hurtPulse;
         bool dead;
@@ -162,7 +164,9 @@ namespace MCR
             rends = null;
             heldVisual = heldOffVisual = null;
             heldKey = heldOffKey = null;
-            armorModels.Clear(); armorBones.Clear(); armorKey = null;
+            heldCount = heldOffCount = 0;
+            armorModels.Clear(); armorBones.Clear();
+            System.Array.Clear(armorKeys, 0, armorKeys.Length);
         }
 
         // ------------------------------------------------------------------ per-frame
@@ -221,13 +225,13 @@ namespace MCR
         void SetAlpha(float a)
         {
             if (rends == null) return;
-            var mpb = new MaterialPropertyBlock();
+            if (alphaMpb == null) alphaMpb = new MaterialPropertyBlock();
             foreach (var r in rends)
             {
                 if (r == null) continue;
-                r.GetPropertyBlock(mpb);
-                mpb.SetColor(EntityLight.ColorId, new Color(1, 1, 1, a));
-                r.SetPropertyBlock(mpb);
+                r.GetPropertyBlock(alphaMpb);
+                alphaMpb.SetColor(EntityLight.ColorId, new Color(1, 1, 1, a));
+                r.SetPropertyBlock(alphaMpb);
             }
         }
 
@@ -538,10 +542,12 @@ namespace MCR
         {
             var main = mob.MainHand;
             var off = mob.OffHand;
-            string mk = main != null && !main.IsEmpty ? main.item.id + ":" + main.count : null;
-            if (mk != heldKey)
+            string mk = main != null && !main.IsEmpty ? main.item.id : null;
+            int mc = mk != null ? main.count : 0;
+            if (mk != heldKey || mc != heldCount)
             {
                 heldKey = mk;
+                heldCount = mc;
                 if (heldVisual != null) { Object.Destroy(heldVisual); heldVisual = null; }
                 var hand = HandBone(0);
                 if (mk != null && hand != null)
@@ -556,10 +562,12 @@ namespace MCR
                     }
                 }
             }
-            string ok = off != null && !off.IsEmpty ? off.item.id + ":" + off.count : null;
-            if (ok != heldOffKey)
+            string ok = off != null && !off.IsEmpty ? off.item.id : null;
+            int oc = ok != null ? off.count : 0;
+            if (ok != heldOffKey || oc != heldOffCount)
             {
                 heldOffKey = ok;
+                heldOffCount = oc;
                 if (heldOffVisual != null) { Object.Destroy(heldOffVisual); heldOffVisual = null; }
                 var hand = HandBone(1);
                 if (ok != null && hand != null)
@@ -581,7 +589,7 @@ namespace MCR
         // showing only the parts of the pieces in that material; its bones copy the wearer's pose every frame
         readonly List<GameObject> armorModels = new List<GameObject>();
         readonly List<Transform[]> armorBones = new List<Transform[]>();
-        string armorKey;
+        readonly string[] armorKeys = new string[4];
         static readonly string[] ArmorBoneNames = { "body", "head", "right_arm", "left_arm", "right_leg", "left_leg" };
         static readonly string[][] ArmorParts =
         {
@@ -594,16 +602,17 @@ namespace MCR
         void UpdateArmor()
         {
             if (def.rig != RigKind.Biped || !bones.ContainsKey("head") || !bones.ContainsKey("right_leg")) return;
-            var sb = new System.Text.StringBuilder();
+            bool changed = false;
             for (int slot = 0; slot < 4; slot++)
             {
                 var a = mob.GetArmor(slot);
-                sb.Append(a != null && !a.IsEmpty && a.item is ArmorItem ? a.item.id : "-").Append('|');
+                string id = a != null && !a.IsEmpty && a.item is ArmorItem ? a.item.id : null;
+                if (armorKeys[slot] == id) continue;
+                armorKeys[slot] = id;
+                changed = true;
             }
-            string key = sb.ToString();
-            if (key != armorKey)
+            if (changed)
             {
-                armorKey = key;
                 foreach (var g in armorModels) if (g != null) Object.Destroy(g);
                 armorModels.Clear(); armorBones.Clear();
                 var armorDef = MobModels.Get("armor");

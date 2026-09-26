@@ -38,7 +38,9 @@ namespace MCR
         Vector4 clip = new Vector4(-1e6f, -1e6f, 1e6f, 1e6f);
         readonly List<Vector4> clipStack = new List<Vector4>();
         int drawnBatches, drawnQuads;
-        int usedMeshes;
+        int usedMeshes, usedBatches;
+        int[] quadIndices;
+        int quadIndexQuads;
 
         public static readonly int MainTexId = Shader.PropertyToID("_MainTex");
         public static readonly int ClipRectId = Shader.PropertyToID("_ClipRect");
@@ -60,7 +62,7 @@ namespace MCR
         {
             Instance = this;
             ScreenW = screenW; ScreenH = screenH; Scale = pixelScale;
-            batches.Clear();
+            usedBatches = 0;
             clip = new Vector4(-1e6f, -1e6f, 1e6f, 1e6f);
             clipStack.Clear();
             drawnBatches = 0; drawnQuads = 0; usedMeshes = 0;
@@ -89,10 +91,17 @@ namespace MCR
 
         Batch Current(Texture tex)
         {
-            var last = batches.Count > 0 ? batches[batches.Count - 1] : null;
+            var last = usedBatches > 0 ? batches[usedBatches - 1] : null;
             if (last != null && last.tex == tex && last.clip == clip) return last;
-            var b = new Batch { tex = tex, clip = clip };
-            batches.Add(b);
+
+            Batch b;
+            if (usedBatches < batches.Count) b = batches[usedBatches];
+            else { b = new Batch(); batches.Add(b); }
+            usedBatches++;
+
+            b.tex = tex;
+            b.clip = clip;
+            b.verts.Clear();
             return b;
         }
 
@@ -209,6 +218,19 @@ namespace MCR
         static readonly Vector4 NoClip = new Vector4(-1e6f, -1e6f, 1e6f, 1e6f);
         static byte[] toLinear;
 
+        void EnsureQuadIndices(int quads)
+        {
+            if (quadIndices != null && quadIndexQuads >= quads) return;
+            quadIndexQuads = Mathf.NextPowerOfTwo(Mathf.Max(1, quads));
+            quadIndices = new int[quadIndexQuads * 6];
+            for (int q = 0; q < quadIndexQuads; q++)
+            {
+                int v = q * 4, o = q * 6;
+                quadIndices[o] = v; quadIndices[o + 1] = v + 1; quadIndices[o + 2] = v + 2;
+                quadIndices[o + 3] = v; quadIndices[o + 4] = v + 2; quadIndices[o + 5] = v + 3;
+            }
+        }
+
         /// <summary>Builds the meshes for everything submitted this frame; <see cref="Draw"/> puts them on screen.</summary>
         void Flush()
         {
@@ -219,8 +241,9 @@ namespace MCR
                 toLinear = new byte[256];
                 for (int i = 0; i < 256; i++) toLinear[i] = (byte)Mathf.RoundToInt(Mathf.GammaToLinearSpace(i / 255f) * 255f);
             }
-            foreach (var b in batches)
+            for (int bi = 0; bi < usedBatches; bi++)
             {
+                var b = batches[bi];
                 if (b.verts.Count == 0) continue;
                 if (linear)
                     for (int i = 0; i < b.verts.Count; i++)
@@ -235,22 +258,16 @@ namespace MCR
                 mesh.SetVertexBufferParams(b.verts.Count, layout);
                 mesh.SetVertexBufferData(b.verts, 0, 0, b.verts.Count, 0, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontNotifyMeshUsers);
                 int quads = b.verts.Count / 4;
-                var idx = new int[quads * 6];
-                for (int q = 0; q < quads; q++)
-                {
-                    int v = q * 4, o = q * 6;
-                    idx[o] = v; idx[o + 1] = v + 1; idx[o + 2] = v + 2;
-                    idx[o + 3] = v; idx[o + 4] = v + 2; idx[o + 5] = v + 3;
-                }
-                mesh.SetIndexBufferParams(idx.Length, IndexFormat.UInt32);
-                mesh.SetIndexBufferData(idx, 0, 0, idx.Length, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontNotifyMeshUsers);
+                int indexCount = quads * 6;
+                EnsureQuadIndices(quads);
+                mesh.SetIndexBufferParams(indexCount, IndexFormat.UInt32);
+                mesh.SetIndexBufferData(quadIndices, 0, 0, indexCount, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontNotifyMeshUsers);
                 mesh.subMeshCount = 1;
-                mesh.SetSubMesh(0, new SubMeshDescriptor(0, idx.Length), MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontNotifyMeshUsers);
+                mesh.SetSubMesh(0, new SubMeshDescriptor(0, indexCount), MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontNotifyMeshUsers);
                 mesh.bounds = new Bounds(new Vector3(ScreenW * 0.5f, ScreenH * 0.5f, 0), new Vector3(ScreenW + 8, ScreenH + 8, 1));
                 prepared.Add(new Prepared { mesh = mesh, mat = GetMaterial(b.tex), clip = b.clip, clipped = b.clip != NoClip });
                 drawnBatches++;
             }
-            batches.Clear();
         }
 
         // ------------------------------------------------------------------ presentation

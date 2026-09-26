@@ -22,6 +22,8 @@ namespace MCR
         World lastRenderedWorld;
         public float lastPartial;
         readonly HashSet<string> renderFailures = new HashSet<string>();
+        readonly Plane[] frustumPlanes = new Plane[6];
+        readonly List<AABB> selectionBoxes = new List<AABB>(4);
         int panoramaFace = -1;
 
         /// <summary>
@@ -198,7 +200,7 @@ namespace MCR
             cam.backgroundColor = WorldLighting.fogColor.gamma;
 
             // ---- entities and particles
-            var frustumPlanes = GeometryUtility.CalculateFrustumPlanes(cam);
+            GeometryUtility.CalculateFrustumPlanes(cam, frustumPlanes);
             foreach (var e in w.entities)
             {
                 if (e.removed) continue;
@@ -224,9 +226,9 @@ namespace MCR
                 {
                     var hit = inter.blockTarget;
                     var b = Blocks.ByState[hit.state];
-                    var boxes = new List<AABB>();
-                    b.GetSelectionBoxes(hit.state - b.baseState, w, hit.pos, boxes);
-                    foreach (var box in boxes)
+                    selectionBoxes.Clear();
+                    b.GetSelectionBoxes(hit.state - b.baseState, w, hit.pos, selectionBoxes);
+                    foreach (var box in selectionBoxes)
                     {
                         var wb = new AABB(box.min + hit.pos.ToVector3(), box.max + hit.pos.ToVector3());
                         SkyRenderer.DrawBox(cam, wb, new Color(0f, 0f, 0f, 0.55f));

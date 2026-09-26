@@ -336,6 +336,10 @@ namespace MCR
                 mesh = new Mesh { name = "Particles" }; mesh.MarkDynamic();
                 idx = new int[Max * 6];
                 for (int i = 0; i < Max; i++) { int v = i * 4, k = i * 6; idx[k] = v; idx[k + 1] = v + 1; idx[k + 2] = v + 2; idx[k + 3] = v; idx[k + 4] = v + 2; idx[k + 5] = v + 3; }
+                mesh.SetVertexBufferParams(Max * 4, ChunkVertex.Layout);
+                mesh.SetIndexBufferParams(Max * 6, IndexFormat.UInt32);
+                mesh.SetIndexBufferData(idx, 0, 0, idx.Length, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontNotifyMeshUsers);
+                mesh.subMeshCount = 1;
                 mat = Res.ChunkCutoutNoCull;
                 genericLayers = new int[8];
                 for (int i = 0; i < 8; i++) genericLayers[i] = L("generic_" + i);
@@ -373,13 +377,8 @@ namespace MCR
                 SetV(ref verts[v + 2], pos + r + u, col, u1, v1, layerH, one, light);
                 SetV(ref verts[v + 3], pos + r - u, col, u1, v0, layerH, one, light);
             }
-            mesh.Clear(false);
-            mesh.SetVertexBufferParams(count * 4, ChunkVertex.Layout);
-            mesh.SetVertexBufferData(verts, 0, 0, count * 4, 0, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
-            mesh.SetIndexBufferParams(count * 6, IndexFormat.UInt32);
-            mesh.SetIndexBufferData(idx, 0, 0, count * 6, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
-            mesh.subMeshCount = 1;
-            mesh.SetSubMesh(0, new SubMeshDescriptor(0, count * 6), MeshUpdateFlags.DontRecalculateBounds);
+            mesh.SetVertexBufferData(verts, 0, 0, count * 4, 0, MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontNotifyMeshUsers);
+            mesh.SetSubMesh(0, new SubMeshDescriptor(0, count * 6), MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontNotifyMeshUsers);
             mesh.bounds = new Bounds(cam.transform.position, Vector3.one * 200);
             Graphics.RenderMesh(new RenderParams(mat) { layer = 0, shadowCastingMode = ShadowCastingMode.Off, receiveShadows = false }, mesh, 0, Matrix4x4.identity);
         }

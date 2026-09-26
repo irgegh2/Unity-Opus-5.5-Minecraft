@@ -18,6 +18,7 @@ namespace MCR
         public int renderDistance = 10;
         readonly ConcurrentQueue<Action> urgentResults = new ConcurrentQueue<Action>();
         readonly ConcurrentQueue<Action> results = new ConcurrentQueue<Action>();
+        readonly ConcurrentBag<Chunk[]> neighbourPool = new ConcurrentBag<Chunk[]>();
         readonly HashSet<long> terrainQ = new HashSet<long>(), decorQ = new HashSet<long>(), lightQ = new HashSet<long>();
         readonly Dictionary<long, ChunkRender> renders = new Dictionary<long, ChunkRender>();
         List<Vector2Int> spiral = new List<Vector2Int>();
@@ -61,15 +62,25 @@ namespace MCR
 
         Chunk[] Neighbours(int cx, int cz, int minStage, bool needLit = false)
         {
-            var nb = new Chunk[9];
+            if (!neighbourPool.TryTake(out var nb)) nb = new Chunk[9];
             for (int dz = -1; dz <= 1; dz++)
                 for (int dx = -1; dx <= 1; dx++)
                 {
                     var c = world.GetChunk(cx + dx, cz + dz);
-                    if (c == null || c.stage < minStage || (needLit && !c.lit)) return null;
+                    if (c == null || c.stage < minStage || (needLit && !c.lit))
+                    {
+                        ReturnNeighbours(nb);
+                        return null;
+                    }
                     nb[(dz + 1) * 3 + dx + 1] = c;
                 }
             return nb;
+        }
+
+        void ReturnNeighbours(Chunk[] nb)
+        {
+            Array.Clear(nb, 0, nb.Length);
+            neighbourPool.Add(nb);
         }
 
         public void Update(Vector3 playerPos, bool loadingScreen = false)
@@ -192,6 +203,7 @@ namespace MCR
             {
                 try { gen.Decorate(c, nb); }
                 catch (Exception e) { Debug.LogError("Decorate failed " + c.cx + "," + c.cz + ": " + e); }
+                finally { ReturnNeighbours(nb); }
                 (highPriority ? urgentResults : results).Enqueue(() =>
                 {
                     decorQ.Remove(key);
@@ -218,6 +230,7 @@ namespace MCR
                 {
                     Debug.LogError("Light failed " + c.cx + "," + c.cz + ": " + e);
                 }
+                finally { ReturnNeighbours(nb); }
 
                 (highPriority ? urgentResults : results).Enqueue(() =>
                 {
@@ -259,22 +272,49 @@ namespace MCR
             var cr = GetRender(c);
             int groups = ChunkMesher.GroupCount(world);
             bool first = !cr.anyBuilt && !c.meshedOnce;
+            int dirtyMask = 0, dirtyCount = 0;
+
             for (int g = 0; g < groups; g++)
             {
                 bool dirty = first;
                 for (int s = g * ChunkMesher.GroupSections; s < Math.Min(c.sectionCount, (g + 1) * ChunkMesher.GroupSections); s++)
                     if (c.sectionDirty[s]) { dirty = true; c.sectionDirty[s] = false; }
                 if (!dirty) continue;
-                int ver = ++cr.version[g];
-                int group = g;
-                if (syncNear)
+                dirtyMask |= 1 << g;
+                dirtyCount++;
+            }
+
+            if (dirtyCount == 0)
+            {
+                ReturnNeighbours(nb);
+                c.anyDirty = false;
+                c.meshedOnce = true;
+                return;
+            }
+
+            if (syncNear)
+            {
+                try
                 {
-                    var data = ChunkMesher.BuildColumn(world, nb, group, smoothLighting, fancyLeaves);
-                    data.version = ver;
-                    Upload(cr, data);
+                    for (int g = 0; g < groups; g++)
+                    {
+                        if ((dirtyMask & (1 << g)) == 0) continue;
+                        int ver = ++cr.version[g];
+                        var data = ChunkMesher.BuildColumn(world, nb, g, smoothLighting, fancyLeaves);
+                        data.version = ver;
+                        Upload(cr, data);
+                    }
                 }
-                else
+                finally { ReturnNeighbours(nb); }
+            }
+            else
+            {
+                int remaining = dirtyCount;
+                for (int g = 0; g < groups; g++)
                 {
+                    if ((dirtyMask & (1 << g)) == 0) continue;
+                    int ver = ++cr.version[g];
+                    int group = g;
                     Interlocked.Increment(ref c.busy);
                     bool smooth = smoothLighting, fancy = fancyLeaves;
                     jobs.Enqueue(() =>
@@ -282,6 +322,11 @@ namespace MCR
                         ColumnMeshData data = null;
                         try { data = ChunkMesher.BuildColumn(world, nb, group, smooth, fancy); data.version = ver; }
                         catch (Exception e) { Debug.LogError("Mesh failed " + c.cx + "," + c.cz + ": " + e); }
+                        finally
+                        {
+                            if (Interlocked.Decrement(ref remaining) == 0)
+                                ReturnNeighbours(nb);
+                        }
                         (highPriority ? urgentResults : results).Enqueue(() =>
                         {
                             Interlocked.Decrement(ref c.busy);

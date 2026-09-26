@@ -167,6 +167,7 @@ namespace MCR
         int followTimer;
         Player follow;
         Renderer[] rends;
+        MaterialPropertyBlock renderMpb;
         public XpOrb() { width = 0.5f; height = 0.5f; blocksBuilding = false; }
         public override string TypeId => "experience_orb";
         public override bool ShouldSave => !removed;
@@ -241,7 +242,8 @@ namespace MCR
             float t = (age + partial) / 2f;
             float g = (Mathf.Sin(t) + 1f) * 0.5f;
             var c = new Color(g, 1f, 0.1f * (1 - g), 1f);
-            foreach (var r in rends) { var mpb = new MaterialPropertyBlock(); r.GetPropertyBlock(mpb); mpb.SetColor(EntityLight.ColorId, c); mpb.SetVector(EntityLight.EntityLightId, new Vector4(1, 1, 1, 0)); r.SetPropertyBlock(mpb); }
+            if (renderMpb == null) renderMpb = new MaterialPropertyBlock();
+            foreach (var r in rends) { r.GetPropertyBlock(renderMpb); renderMpb.SetColor(EntityLight.ColorId, c); renderMpb.SetVector(EntityLight.EntityLightId, new Vector4(1, 1, 1, 0)); r.SetPropertyBlock(renderMpb); }
         }
         public override void Save(Dictionary<string, string> d) { base.Save(d); d["v"] = value.ToString(); d["age"] = age.ToString(); }
         public override void Load(Dictionary<string, string> d) { base.Load(d); if (d.TryGetValue("v", out var v)) int.TryParse(v, out value); if (d.TryGetValue("age", out var a)) int.TryParse(a, out age); }
