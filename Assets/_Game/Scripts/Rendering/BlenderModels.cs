@@ -52,6 +52,10 @@ namespace MCR
         public static ModelMesher.BoneMesh[] BoneMeshes(ModelDef def)
         {
             if (!Enabled || def == null) return null;
+            // The player uses the canonical 64x64 runtime definition, including all four
+            // second-skin layers. The checked-in FBX predates that layout and must not
+            // silently replace it.
+            if (def.name == "player") return null;
             var e = Load(def.name);
             if (e == null || e.mesh == null) return null;
             if (!e.cut)

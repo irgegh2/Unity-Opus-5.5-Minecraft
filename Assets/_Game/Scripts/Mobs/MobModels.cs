@@ -27,7 +27,7 @@ namespace MCR
         {
             if (inited) return; inited = true;
             // ---------------------------------------------------------------- humanoids
-            Biped("player", 4, 12, 4, 4, true);
+            PlayerModel();
             Biped("zombie", 4, 12, 4, 4, true);
             Biped("husk", 4, 12, 4, 4, true).scale = 1.0625f;
             Biped("drowned", 4, 12, 4, 4, true);
@@ -66,6 +66,48 @@ namespace MCR
         }
 
         // ================================================================= humanoid families
+        /// <summary>
+        /// Classic/wide Minecraft player model using the standard 64x64 skin layout.
+        /// One model pixel is 1/16 block. The visual model is 2 blocks tall; the gameplay
+        /// collision box remains the Player class' 0.6 x 1.8 blocks.
+        /// </summary>
+        static void PlayerModel()
+        {
+            var d = New("player", RigKind.Biped, 64, 64);
+
+            var body = d.Bone("body", null, 0, 24, 0);
+            body.Cube(-4, 12, -2, 8, 12, 4, 16, 16);
+            body.Cube(-4, 12, -2, 8, 12, 4, 16, 32, 0.25f);
+            body.Last.name = "jacket";
+
+            var head = d.Bone("head", "body", 0, 24, 0);
+            head.Cube(-4, 24, -4, 8, 8, 8, 0, 0);
+            head.Cube(-4, 24, -4, 8, 8, 8, 32, 0, 0.5f);
+            head.Last.name = "hat";
+
+            var rightArm = d.Bone("right_arm", "body", 5, 22, 0);
+            rightArm.Cube(4, 12, -2, 4, 12, 4, 40, 16);
+            rightArm.Cube(4, 12, -2, 4, 12, 4, 40, 32, 0.25f);
+            rightArm.Last.name = "sleeve";
+
+            var leftArm = d.Bone("left_arm", "body", -5, 22, 0);
+            leftArm.Cube(-8, 12, -2, 4, 12, 4, 32, 48);
+            leftArm.Cube(-8, 12, -2, 4, 12, 4, 48, 48, 0.25f);
+            leftArm.Last.name = "sleeve";
+
+            var rightLeg = d.Bone("right_leg", null, 1.9f, 12, 0);
+            rightLeg.Cube(-0.1f, 0, -2, 4, 12, 4, 0, 16);
+            rightLeg.Cube(-0.1f, 0, -2, 4, 12, 4, 0, 32, 0.25f);
+            rightLeg.Last.name = "pants_layer";
+
+            var leftLeg = d.Bone("left_leg", null, -1.9f, 12, 0);
+            leftLeg.Cube(-3.9f, 0, -2, 4, 12, 4, 16, 48);
+            leftLeg.Cube(-3.9f, 0, -2, 4, 12, 4, 0, 48, 0.25f);
+            leftLeg.Last.name = "pants_layer";
+
+            Done(d);
+        }
+
         static ModelDef Biped(string name, float armW, float armH, float legW, float legD, bool jacket, float bodyH = 12, float headS = 8)
         {
             var d = New(name, RigKind.Biped);
