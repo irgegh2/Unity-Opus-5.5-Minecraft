@@ -176,6 +176,8 @@ namespace MCR
         // ------------------------------------------------------------------ terrain
         [ThreadStatic] static float[] tlsDensity;
         [ThreadStatic] static float[] tlsCave;
+        [ThreadStatic] static float[] tlsCornerH;
+        [ThreadStatic] static float[] tlsCornerAmp;
         [ThreadStatic] static Climate[] tlsClimate;
 
         public override void GenerateTerrain(Chunk c)
@@ -193,8 +195,10 @@ namespace MCR
                     if (k.height > maxH) maxH = k.height;
                     if (k.height < minH) minH = k.height;
                 }
-            // corner climates for density grid (5x5)
-            var cornerH = new float[25]; var cornerAmp = new float[25];
+            // corner climates for density grid (5x5). Sixteen of the samples are
+            // already present in the 16x16 climate grid; only the +16 edge is new.
+            var cornerH = tlsCornerH ?? (tlsCornerH = new float[25]);
+            var cornerAmp = tlsCornerAmp ?? (tlsCornerAmp = new float[25]);
             for (int j = 0; j < 5; j++)
                 for (int i = 0; i < 5; i++)
                 {
@@ -311,9 +315,9 @@ namespace MCR
                     // bedrock
                     for (int y = minY; y < minY + 5; y++) if (y == minY || rng.Next(5) >= y - minY) c.SetRaw(lx, y, lz, BEDROCK);
                     // surface rules
-                    ApplySurface(c, lx, lz, x0 + lx, z0 + lz, k, ref rng);
+                    ApplySurface(c, lx, lz, x0 + lx, z0 + lz, k, clim, ref rng);
                 }
-            BuildCaveBiomes(c);
+            BuildCaveBiomes(c, clim);
             // record immutable generation info
             for (int lz = 0; lz < 16; lz++)
                 for (int lx = 0; lx < 16; lx++)
@@ -333,7 +337,7 @@ namespace MCR
                 }
         }
 
-        void ApplySurface(Chunk c, int lx, int lz, int wx, int wz, Climate k, ref RNG rng)
+        void ApplySurface(Chunk c, int lx, int lz, int wx, int wz, Climate k, Climate[] clim, ref RNG rng)
         {
             var b = Biome.Get(k.biome);
             int minY = world.minY;
@@ -346,7 +350,8 @@ namespace MCR
             // steepness
             float steep = 0;
             {
-                var kx = SampleHeightOnly(wx + 2, wz); var kz = SampleHeightOnly(wx, wz + 2);
+                float kx = lx + 2 < 16 ? clim[lz * 16 + lx + 2].height : SampleHeightOnly(wx + 2, wz);
+                float kz = lz + 2 < 16 ? clim[(lz + 2) * 16 + lx].height : SampleHeightOnly(wx, wz + 2);
                 steep = Mathf.Max(Mathf.Abs(kx - k.height), Mathf.Abs(kz - k.height)) / 2f;
             }
             ushort top, fill; int depth = b.fillerDepth + (int)(sn * 2 + 1);
@@ -439,7 +444,7 @@ namespace MCR
 
         float SampleHeightOnly(int x, int z) => SampleClimate(x, z).height;
 
-        void BuildCaveBiomes(Chunk c)
+        void BuildCaveBiomes(Chunk c, Climate[] clim)
         {
             int qn = world.height / 4;
             var b3 = new byte[qn * 16];
@@ -449,10 +454,9 @@ namespace MCR
                 for (int qx = 0; qx < 4; qx++)
                 {
                     int lx = qx * 4 + 2, lz = qz * 4 + 2;
-                    int surface = c.genTopY[lz * 16 + lx] != 0 ? c.genTopY[lz * 16 + lx] : 64;
-                    // genTopY not computed yet at this point for all columns -> use climate height
-                    var k = SampleClimate(x0 + lx, z0 + lz);
-                    surface = (int)k.height;
+                    // This exact climate sample was already computed at terrain start.
+                    var k = clim[lz * 16 + lx];
+                    int surface = (int)k.height;
                     byte surf = c.biomes2D[lz * 16 + lx];
                     for (int qy = 0; qy < qn; qy++)
                     {

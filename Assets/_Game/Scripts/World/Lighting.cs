@@ -44,6 +44,8 @@ namespace MCR
             int cells = W * W * R;
             s.Ensure(cells);
             byte[] op = s.op, sky = s.sky, blk = s.blk;
+            var stateOpacity = Blocks.StateOpacity;
+            var stateEmission = Blocks.StateEmission;
             Array.Clear(sky, 0, cells); Array.Clear(blk, 0, cells);
             s.emitters.Clear();
             // fill opacity/emission
@@ -64,15 +66,15 @@ namespace MCR
                             int rowBase = (y * W + (oz + lz)) * W + ox;
                             if (empty)
                             {
-                                for (int lx = 0; lx < 16; lx++) op[rowBase + lx] = 0;
+                                Array.Clear(op, rowBase, 16);
                                 continue;
                             }
                             int si = (ly << 8) | (lz << 4);
                             for (int lx = 0; lx < 16; lx++)
                             {
                                 ushort state = st[si + lx];
-                                op[rowBase + lx] = Blocks.StateOpacity[state];
-                                byte em = Blocks.StateEmission[state];
+                                op[rowBase + lx] = stateOpacity[state];
+                                byte em = stateEmission[state];
                                 if (em > 0) { blk[rowBase + lx] = em; s.emitters.Add(rowBase + lx); }
                             }
                         }

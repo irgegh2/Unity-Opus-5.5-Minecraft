@@ -99,13 +99,14 @@ namespace MCR
 
         public void FlushPendingWrites()
         {
+            if (!writerRunning && Volatile.Read(ref pendingWriteCount) == 0) return;
             writerIdle.Wait();
         }
 
         public void ShutdownWriter()
         {
-            FlushPendingWrites();
             if (!writerRunning) return;
+            FlushPendingWrites();
             writerRunning = false;
             writerSignal.Set();
             try { writerThread.Join(); } catch { }
