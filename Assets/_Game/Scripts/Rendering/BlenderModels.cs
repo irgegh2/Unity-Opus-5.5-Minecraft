@@ -24,6 +24,25 @@ namespace MCR
         }
         static readonly Dictionary<string, Entry> cache = new Dictionary<string, Entry>();
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetRuntimeState()
+        {
+            cache.Clear();
+            announced = false;
+        }
+
+        static bool BoneMeshesAlive(ModelMesher.BoneMesh[] meshes)
+        {
+            if (meshes == null) return false;
+            foreach (var bm in meshes)
+            {
+                if (bm == null) continue;
+                if (!object.ReferenceEquals(bm.main, null) && bm.main == null) return false;
+                foreach (var kv in bm.optional) if (kv.Value == null) return false;
+            }
+            return true;
+        }
+
         /// <summary>The FBX override of a model (mesh and skin material from Resources/Models, loaded once and cached); false when it has none.</summary>
         public static bool TryGet(string name, out Mesh mesh, out Material mat)
         {
@@ -36,11 +55,19 @@ namespace MCR
         static Entry Load(string name)
         {
             if (string.IsNullOrEmpty(name)) return null;
-            if (!cache.TryGetValue(name, out var e))
+            if (cache.TryGetValue(name, out var e) && e != null)
             {
-                e = new Entry { mesh = Resources.Load<Mesh>("Models/" + name + "_mesh"), mat = Resources.Load<Material>("Models/" + name + "_mat") };
-                cache[name] = e;
+                // ReferenceEquals distinguishes a genuine cached miss (real null) from a
+                // destroyed Unity object, which also compares == null.
+                if (object.ReferenceEquals(e.mesh, null) || e.mesh != null) return e;
             }
+
+            e = new Entry
+            {
+                mesh = Resources.Load<Mesh>("Models/" + name + "_mesh"),
+                mat = Resources.Load<Material>("Models/" + name + "_mat")
+            };
+            cache[name] = e;
             return e;
         }
 
@@ -52,12 +79,14 @@ namespace MCR
         public static ModelMesher.BoneMesh[] BoneMeshes(ModelDef def)
         {
             if (!Enabled || def == null) return null;
-            // The player uses the canonical 64x64 runtime definition, including all four
-            // second-skin layers. The checked-in FBX predates that layout and must not
-            // silently replace it.
             if (def.name == "player") return null;
             var e = Load(def.name);
             if (e == null || e.mesh == null) return null;
+            if (e.cut && !BoneMeshesAlive(e.bones))
+            {
+                e.cut = false;
+                e.bones = null;
+            }
             if (!e.cut)
             {
                 e.cut = true;
