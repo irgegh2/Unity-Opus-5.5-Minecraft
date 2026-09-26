@@ -213,6 +213,7 @@ namespace MCR
         struct LNode { public Int3 p; public int level; }
         static readonly Queue<LNode> removeQ = new Queue<LNode>();
         static readonly Queue<Int3> addQ = new Queue<Int3>();
+        static readonly Dictionary<Chunk, ulong> dirtySections = new Dictionary<Chunk, ulong>();
 
         static int GetL(World w, Int3 p, bool sky)
         {
@@ -224,6 +225,47 @@ namespace MCR
             return sky ? v >> 4 : v & 15;
         }
 
+        static void CollectDirtySection(World w, int x, int y, int z)
+        {
+            if (y < w.minY || y >= w.maxY) return;
+            var c = w.GetChunk(x >> 4, z >> 4);
+            if (c == null) return;
+            int sy = (y - w.minY) >> 4;
+            if ((uint)sy >= (uint)c.sectionCount || sy >= 64) return;
+            ulong bit = 1UL << sy;
+            dirtySections.TryGetValue(c, out ulong mask);
+            dirtySections[c] = mask | bit;
+        }
+
+        static void CollectDirtyAround(World w, Int3 p)
+        {
+            CollectDirtySection(w, p.x, p.y, p.z);
+            int lx = p.x & 15, lz = p.z & 15, ly = (p.y - w.minY) & 15;
+            if (lx == 0) CollectDirtySection(w, p.x - 1, p.y, p.z);
+            if (lx == 15) CollectDirtySection(w, p.x + 1, p.y, p.z);
+            if (lz == 0) CollectDirtySection(w, p.x, p.y, p.z - 1);
+            if (lz == 15) CollectDirtySection(w, p.x, p.y, p.z + 1);
+            if (ly == 0) CollectDirtySection(w, p.x, p.y - 1, p.z);
+            if (ly == 15) CollectDirtySection(w, p.x, p.y + 1, p.z);
+            if (lx == 0 && lz == 0) CollectDirtySection(w, p.x - 1, p.y, p.z - 1);
+            if (lx == 15 && lz == 0) CollectDirtySection(w, p.x + 1, p.y, p.z - 1);
+            if (lx == 0 && lz == 15) CollectDirtySection(w, p.x - 1, p.y, p.z + 1);
+            if (lx == 15 && lz == 15) CollectDirtySection(w, p.x + 1, p.y, p.z + 1);
+        }
+
+        static void FlushDirtySections()
+        {
+            foreach (var kv in dirtySections)
+            {
+                var c = kv.Key;
+                ulong mask = kv.Value;
+                for (int sy = 0; sy < c.sectionCount && sy < 64; sy++)
+                    if ((mask & (1UL << sy)) != 0)
+                        c.MarkSectionDirty(sy);
+            }
+            dirtySections.Clear();
+        }
+
         static void SetL(World w, Int3 p, bool sky, int val)
         {
             if (p.y < w.minY || p.y >= w.maxY) return;
@@ -233,15 +275,23 @@ namespace MCR
             byte nv = sky ? (byte)((v & 0x0F) | (val << 4)) : (byte)((v & 0xF0) | val);
             if (nv == v) return;
             c.SetLight(p.x & 15, p.y, p.z & 15, nv);
-            w.MarkDirtyAround(p);
+            CollectDirtyAround(w, p);
         }
 
         public static void OnBlockChanged(World w, Int3 p, ushort oldS, ushort newS)
         {
-            int oldOp = Blocks.StateOpacity[oldS], newOp = Blocks.StateOpacity[newS];
-            int oldEm = Blocks.StateEmission[oldS], newEm = Blocks.StateEmission[newS];
-            if (oldEm != newEm || oldOp != newOp) UpdateChannel(w, p, false, newEm, oldOp, newOp);
-            if (w.hasSkyLight && oldOp != newOp) UpdateChannel(w, p, true, 0, oldOp, newOp);
+            dirtySections.Clear();
+            try
+            {
+                int oldOp = Blocks.StateOpacity[oldS], newOp = Blocks.StateOpacity[newS];
+                int oldEm = Blocks.StateEmission[oldS], newEm = Blocks.StateEmission[newS];
+                if (oldEm != newEm || oldOp != newOp) UpdateChannel(w, p, false, newEm, oldOp, newOp);
+                if (w.hasSkyLight && oldOp != newOp) UpdateChannel(w, p, true, 0, oldOp, newOp);
+            }
+            finally
+            {
+                FlushDirtySections();
+            }
         }
 
         static void UpdateChannel(World w, Int3 p, bool sky, int newEmit, int oldOp, int newOp)

@@ -206,7 +206,25 @@ namespace MCR
                     if (be != null) { be.world = this; be.pos = p; c.blockEntities[bi] = be; }
                 }
             }
-            c.RecomputeHeight(lx, lz);
+            int hi = (lz << 4) | lx;
+            bool oldSkyBlock = Blocks.StateOpacity[old] > 0;
+            bool newSkyBlock = Blocks.StateOpacity[state] > 0;
+            bool oldSurfaceBlock = oldB.solid || oldB.isLiquid;
+            bool newSurfaceBlock = newB.solid || newB.isLiquid;
+
+            bool skyHeightMayChange =
+                oldSkyBlock != newSkyBlock &&
+                ((oldSkyBlock && c.skyHeight[hi] == p.y + 1) ||
+                 (newSkyBlock && p.y + 1 > c.skyHeight[hi]));
+
+            bool surfaceHeightMayChange =
+                oldSurfaceBlock != newSurfaceBlock &&
+                ((oldSurfaceBlock && c.surfaceHeight[hi] == p.y) ||
+                 (newSurfaceBlock && p.y > c.surfaceHeight[hi]));
+
+            if (skyHeightMayChange || surfaceHeightMayChange)
+                c.RecomputeHeight(lx, lz);
+
             if ((flags & SetFlags.NoLight) == 0 && c.lit)
                 Lighting.OnBlockChanged(this, p, old, state);
             MarkDirtyAround(p);
